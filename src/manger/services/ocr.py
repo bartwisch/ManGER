@@ -28,6 +28,14 @@ except ImportError:
     torch = None
     AutoModel = None
 
+# Check for manga-ocr availability
+try:
+    from manga_ocr import MangaOcr
+    MANGA_OCR_AVAILABLE = True
+except ImportError:
+    MANGA_OCR_AVAILABLE = False
+    MangaOcr = None
+
 
 class OCRError(Exception):
     """Base exception for OCR-related errors."""
@@ -219,13 +227,25 @@ class MagiOCRService(BaseOCRService):
     - Panel detection
     - Text-to-character associations
     
+    Can optionally use manga-ocr for better text recognition.
+    
     Requires: pip install manger[magi]
     """
     
-    def __init__(self, config: OCRConfig | None = None):
+    def __init__(self, config: OCRConfig | None = None, use_manga_ocr: bool = True, model_version: str = "v1"):
+        """Initialize Magi OCR service.
+        
+        Args:
+            config: OCR configuration
+            use_manga_ocr: If True, use manga-ocr for text recognition instead of Magi's OCR
+            model_version: "v1" for ragavsachdeva/magi (better OCR), "v2" for ragavsachdeva/magiv2
+        """
         super().__init__(config)
         self._model = None
         self._device = None
+        self._use_manga_ocr = use_manga_ocr and MANGA_OCR_AVAILABLE
+        self._manga_ocr = None
+        self._model_version = model_version
     
     def load_model(self) -> None:
         """Load the Magi model from HuggingFace."""
@@ -235,7 +255,9 @@ class MagiOCRService(BaseOCRService):
             )
         
         try:
-            logger.info("Loading Magi model from HuggingFace...")
+            # Select model based on version
+            model_name = "ragavsachdeva/magi" if self._model_version == "v1" else "ragavsachdeva/magiv2"
+            logger.info(f"Loading Magi model ({model_name}) from HuggingFace...")
             
             # Determine device
             if torch.cuda.is_available():
@@ -250,13 +272,24 @@ class MagiOCRService(BaseOCRService):
             
             # Load model
             self._model = AutoModel.from_pretrained(
-                "ragavsachdeva/magiv2",
+                model_name,
                 trust_remote_code=True
             )
             self._model = self._model.to(self._device).eval()
             
             self._model_loaded = True
-            logger.info("Magi model loaded successfully")
+            logger.info(f"Magi model ({self._model_version}) loaded successfully")
+            
+            # Load manga-ocr if enabled
+            if self._use_manga_ocr:
+                try:
+                    logger.info("Loading manga-ocr for text recognition...")
+                    self._manga_ocr = MangaOcr()
+                    logger.info("manga-ocr loaded successfully")
+                except Exception as e:
+                    logger.warning(f"Failed to load manga-ocr: {e}. Using Magi OCR instead.")
+                    self._use_manga_ocr = False
+                    self._manga_ocr = None
             
         except Exception as e:
             raise OCRModelLoadError(f"Failed to load Magi model: {e}") from e
@@ -313,12 +346,75 @@ class MagiOCRService(BaseOCRService):
         
         return img_array, scale_factor
     
+    def _run_manga_ocr(
+        self, 
+        original_image: Image.Image, 
+        text_bboxes: list, 
+        scale_factor: int
+    ) -> list[str]:
+        """Run manga-ocr on detected text regions.
+        
+        Args:
+            original_image: Original PIL Image (not scaled)
+            text_bboxes: List of bounding boxes from Magi (in scaled coordinates)
+            scale_factor: Scale factor used for Magi detection
+            
+        Returns:
+            List of OCR texts for each bounding box
+        """
+        if self._manga_ocr is None:
+            return [""] * len(text_bboxes)
+        
+        width, height = original_image.size
+        ocr_texts = []
+        
+        for bbox in text_bboxes:
+            try:
+                # Check if coordinates are already normalized (0-1 range)
+                if all(0 <= coord <= 1 for coord in bbox[:4]):
+                    # Normalized - convert to pixels
+                    x_min = int(bbox[0] * width)
+                    y_min = int(bbox[1] * height)
+                    x_max = int(bbox[2] * width)
+                    y_max = int(bbox[3] * height)
+                else:
+                    # Pixel coordinates from scaled image - scale back
+                    x_min = int(bbox[0] / scale_factor)
+                    y_min = int(bbox[1] / scale_factor)
+                    x_max = int(bbox[2] / scale_factor)
+                    y_max = int(bbox[3] / scale_factor)
+                
+                # Add padding for better OCR
+                box_width = x_max - x_min
+                box_height = y_max - y_min
+                padding_x = int(box_width * 0.1)
+                padding_y = int(box_height * 0.1)
+                
+                x_min = max(0, x_min - padding_x)
+                y_min = max(0, y_min - padding_y)
+                x_max = min(width, x_max + padding_x)
+                y_max = min(height, y_max + padding_y)
+                
+                # Crop the region
+                crop = original_image.crop((x_min, y_min, x_max, y_max))
+                
+                # Run manga-ocr on the crop
+                text = self._manga_ocr(crop)
+                ocr_texts.append(text)
+                logger.debug(f"manga-ocr result: '{text}'")
+                
+            except Exception as e:
+                logger.warning(f"manga-ocr failed for region: {e}")
+                ocr_texts.append("")
+        
+        return ocr_texts
+    
     def detect_text(self, image: Image.Image) -> list[TextBlock]:
         """Detect text using Magi model.
         
         This performs full detection including:
         - Text bounding boxes
-        - OCR on detected text regions
+        - OCR on detected text regions (using manga-ocr if available)
         - Character detection (for speaker association)
         """
         if self._model is None:
@@ -344,11 +440,17 @@ class MagiOCRService(BaseOCRService):
                     return []
                 
                 # Run OCR on detected text regions
-                ocr_results = self._model.predict_ocr(
-                    [np_image], 
-                    [text_bboxes]
-                )
-                ocr_texts = ocr_results[0] if ocr_results else []
+                if self._use_manga_ocr and self._manga_ocr is not None:
+                    # Use manga-ocr for text recognition
+                    logger.debug("Using manga-ocr for text recognition")
+                    ocr_texts = self._run_manga_ocr(image, text_bboxes, scale_factor)
+                else:
+                    # Use Magi's built-in OCR
+                    ocr_results = self._model.predict_ocr(
+                        [np_image], 
+                        [text_bboxes]
+                    )
+                    ocr_texts = ocr_results[0] if ocr_results else []
                 
                 # Get character associations if available
                 text_char_associations = result.get("text_character_associations", [])

@@ -281,7 +281,7 @@ def draw_text_boxes(image: Image.Image, blocks: list, show_text: bool = True, sh
 
 from manger.config import get_config, AppConfig
 from manger.pipeline import MangaPipeline
-from manger.services.ocr import create_ocr_service
+from manger.services.ocr import create_ocr_service, MagiOCRService, MAGI_AVAILABLE
 from manger.services.translator import create_translator
 from manger.services.renderer import Renderer
 from manger.services.pdf import PDFService, PDFError
@@ -340,7 +340,9 @@ def get_pipeline(settings: dict | None = None) -> MangaPipeline:
         if (settings.get("api_key") != current_settings.get("api_key") or
             settings.get("provider") != current_settings.get("provider") or
             settings.get("source_lang") != current_settings.get("source_lang") or
-            settings.get("target_lang") != current_settings.get("target_lang")):
+            settings.get("target_lang") != current_settings.get("target_lang") or
+            settings.get("ocr_engine") != current_settings.get("ocr_engine") or
+            settings.get("magi_version") != current_settings.get("magi_version")):
             needs_recreate = True
             st.session_state._pipeline_settings = settings.copy()
     
@@ -360,9 +362,17 @@ def get_pipeline(settings: dict | None = None) -> MangaPipeline:
         else:
             trans_config = config.translation
         
+        # Create OCR service based on settings
+        use_manga_ocr = settings.get("ocr_engine", "magi") == "manga-ocr" if settings else False
+        magi_version = settings.get("magi_version", "v1") if settings else "v1"
+        if MAGI_AVAILABLE:
+            ocr_service = MagiOCRService(config.ocr, use_manga_ocr=use_manga_ocr, model_version=magi_version)
+        else:
+            ocr_service = create_ocr_service(config.ocr)
+        
         st.session_state.pipeline = MangaPipeline(
             config=config,
-            ocr_service=create_ocr_service(config.ocr),
+            ocr_service=ocr_service,
             translator=create_translator(trans_config),
             renderer=Renderer(config.render),
         )
@@ -374,6 +384,21 @@ def render_sidebar():
     st.sidebar.title("⚙️ Settings")
     
     st.sidebar.subheader("OCR Settings")
+    
+    magi_version = st.sidebar.selectbox(
+        "Magi Model",
+        options=["v1", "v2"],
+        index=0,
+        help="v1: Better OCR accuracy (KILL not FILL). v2: Faster, more features.",
+    )
+    
+    ocr_engine = st.sidebar.selectbox(
+        "OCR Engine",
+        options=["magi", "manga-ocr"],
+        index=0,
+        help="magi: Best for English text. manga-ocr: Best for Japanese text only.",
+    )
+    
     confidence = st.sidebar.slider(
         "Confidence Threshold",
         min_value=0.0,
@@ -471,6 +496,8 @@ def render_sidebar():
         "font_size": font_size,
         "render_dpi": render_dpi,
         "show_polygons": show_polygons,
+        "ocr_engine": ocr_engine,
+        "magi_version": magi_version,
     }
 
 
