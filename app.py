@@ -5,6 +5,7 @@ Run with: streamlit run app.py
 """
 
 import sys
+import os
 from pathlib import Path
 
 # Add src to path for imports
@@ -15,10 +16,65 @@ from PIL import Image
 import io
 from loguru import logger
 
+# .env file path
+ENV_FILE = Path(__file__).parent / ".env"
+
+
+def load_api_key_from_env() -> str:
+    """Load API key from .env file or environment."""
+    # First check environment variable
+    api_key = os.environ.get("MANGER_TRANSLATE_OPENAI_API_KEY", "")
+    if api_key:
+        return api_key
+    
+    # Then check .env file
+    if ENV_FILE.exists():
+        try:
+            with open(ENV_FILE, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("MANGER_TRANSLATE_OPENAI_API_KEY="):
+                        return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except Exception:
+            pass
+    return ""
+
+
+def save_api_key_to_env(api_key: str) -> None:
+    """Save API key to .env file."""
+    lines = []
+    key_found = False
+    
+    # Read existing .env if it exists
+    if ENV_FILE.exists():
+        try:
+            with open(ENV_FILE, "r") as f:
+                for line in f:
+                    if line.strip().startswith("MANGER_TRANSLATE_OPENAI_API_KEY="):
+                        if api_key:  # Only write if we have a key
+                            lines.append(f'MANGER_TRANSLATE_OPENAI_API_KEY="{api_key}"\n')
+                        key_found = True
+                    else:
+                        lines.append(line)
+        except Exception:
+            pass
+    
+    # Add key if not found and we have one
+    if not key_found and api_key:
+        lines.append(f'MANGER_TRANSLATE_OPENAI_API_KEY="{api_key}"\n')
+    
+    # Write back
+    if lines or api_key:
+        try:
+            with open(ENV_FILE, "w") as f:
+                f.writelines(lines)
+        except Exception as e:
+            logger.warning(f"Failed to save API key: {e}")
+
 from manger.config import get_config, AppConfig
 from manger.pipeline import MangaPipeline
-from manger.services.ocr import DummyOCRService
-from manger.services.translator import DummyTranslator
+from manger.services.ocr import create_ocr_service
+from manger.services.translator import create_translator
 from manger.services.renderer import Renderer
 from manger.services.pdf import PDFService, PDFError
 from manger.domain.models import TextBlock, MangaPage
@@ -63,14 +119,43 @@ def init_session_state():
         st.session_state.processing_complete = False
 
 
-def get_pipeline() -> MangaPipeline:
-    """Get or create the pipeline instance."""
-    if st.session_state.pipeline is None:
+def get_pipeline(settings: dict | None = None) -> MangaPipeline:
+    """Get or create the pipeline instance.
+    
+    Args:
+        settings: Settings dict from sidebar (api_key, provider, etc.)
+    """
+    # Check if we need to recreate the pipeline due to settings change
+    needs_recreate = False
+    if settings:
+        current_settings = st.session_state.get("_pipeline_settings", {})
+        if (settings.get("api_key") != current_settings.get("api_key") or
+            settings.get("provider") != current_settings.get("provider") or
+            settings.get("source_lang") != current_settings.get("source_lang") or
+            settings.get("target_lang") != current_settings.get("target_lang")):
+            needs_recreate = True
+            st.session_state._pipeline_settings = settings.copy()
+    
+    if st.session_state.pipeline is None or needs_recreate:
+        from manger.config import TranslationConfig
+        
         config = get_config()
+        
+        # Override translation config with sidebar settings
+        if settings:
+            trans_config = TranslationConfig(
+                provider=settings.get("provider", "openai"),
+                openai_api_key=settings.get("api_key") or None,
+                source_language=settings.get("source_lang", "en"),
+                target_language=settings.get("target_lang", "de"),
+            )
+        else:
+            trans_config = config.translation
+        
         st.session_state.pipeline = MangaPipeline(
             config=config,
-            ocr_service=DummyOCRService(config.ocr),
-            translator=DummyTranslator(config.translation),
+            ocr_service=create_ocr_service(config.ocr),
+            translator=create_translator(trans_config),
             renderer=Renderer(config.render),
         )
     return st.session_state.pipeline
@@ -91,24 +176,44 @@ def render_sidebar():
     )
     
     st.sidebar.subheader("Translation Settings")
+    
+    # Load saved API key
+    if "_saved_api_key" not in st.session_state:
+        st.session_state._saved_api_key = load_api_key_from_env()
+    
+    # API Key input
+    api_key = st.sidebar.text_input(
+        "OpenAI API Key",
+        value=st.session_state._saved_api_key,
+        type="password",
+        help="Enter your OpenAI API key for translation (auto-saved)",
+    )
+    
+    # Save API key if changed
+    if api_key != st.session_state._saved_api_key:
+        st.session_state._saved_api_key = api_key
+        if api_key:
+            save_api_key_to_env(api_key)
+            st.sidebar.success("✓ API key saved", icon="🔐")
+    
     provider = st.sidebar.selectbox(
         "Translation Provider",
         options=["dummy", "openai"],
-        index=0,
+        index=1,
         help="Select the translation backend",
     )
     
     source_lang = st.sidebar.selectbox(
         "Source Language",
-        options=["ja", "ko", "zh"],
+        options=["en", "ja", "ko", "zh"],
         index=0,
-        format_func=lambda x: {"ja": "Japanese", "ko": "Korean", "zh": "Chinese"}[x],
+        format_func=lambda x: {"en": "English", "ja": "Japanese", "ko": "Korean", "zh": "Chinese"}[x],
     )
     
     target_lang = st.sidebar.selectbox(
         "Target Language",
         options=["en", "de", "fr", "es"],
-        index=0,
+        index=1,
         format_func=lambda x: {
             "en": "English",
             "de": "German",
@@ -138,13 +243,14 @@ def render_sidebar():
     st.sidebar.divider()
     
     st.sidebar.info(
-        "**Note:** This demo uses a dummy OCR and translator. "
-        "For real translations, configure the OpenAI API key."
+        "**Note:** Enter your OpenAI API key above to use GPT-4o-mini for translation. "
+        "Use 'dummy' provider for testing without an API key."
     )
     
     return {
         "confidence": confidence,
         "provider": provider,
+        "api_key": api_key,
         "source_lang": source_lang,
         "target_lang": target_lang,
         "font_size": font_size,
@@ -316,24 +422,33 @@ def render_page_viewer():
     
     btn_col1, btn_col2, btn_col3 = st.columns(3)
     
+    # Get settings from session state (set by main)
+    settings = st.session_state.get("_current_settings", {})
+    
     with btn_col1:
         if st.button("🔍 Detect Text", key=f"detect_{current_page_num}", use_container_width=True):
             with st.spinner("Detecting text..."):
-                pipeline = get_pipeline()
+                pipeline = get_pipeline(settings)
                 blocks = pipeline.ocr.process_image(page_data["image"])
                 page_data["blocks"] = blocks
                 st.success(f"Detected {len(blocks)} text blocks!")
                 st.rerun()
     
     with btn_col2:
+        # Check if API key is provided when using OpenAI
+        provider = settings.get("provider", "openai")
+        api_key = settings.get("api_key", "")
+        needs_api_key = provider == "openai" and not api_key
+        
         if st.button(
             "🌐 Translate",
             key=f"translate_{current_page_num}",
-            disabled=len(page_data["blocks"]) == 0,
+            disabled=len(page_data["blocks"]) == 0 or needs_api_key,
             use_container_width=True,
+            help="Enter OpenAI API key in sidebar" if needs_api_key else None,
         ):
             with st.spinner("Translating..."):
-                pipeline = get_pipeline()
+                pipeline = get_pipeline(settings)
                 texts = [b.original_text for b in page_data["blocks"]]
                 translations = pipeline.translator.translate_batch(texts)
                 
@@ -342,6 +457,9 @@ def render_page_viewer():
                 
                 st.success("Translation complete!")
                 st.rerun()
+        
+        if needs_api_key and len(page_data["blocks"]) > 0:
+            st.caption("⚠️ Enter OpenAI API key in sidebar or use 'dummy' provider")
     
     with btn_col3:
         if st.button(
@@ -351,7 +469,7 @@ def render_page_viewer():
             use_container_width=True,
         ):
             with st.spinner("Rendering..."):
-                pipeline = get_pipeline()
+                pipeline = get_pipeline(settings)
                 translated_blocks = [
                     b for b in page_data["blocks"] if b.translated_text
                 ]
@@ -407,7 +525,16 @@ def render_batch_processing():
 def process_all_pages():
     """Process all selected pages."""
     selected = st.session_state.selected_pages
-    pipeline = get_pipeline()
+    settings = st.session_state.get("_current_settings", {})
+    
+    # Check if API key is needed
+    provider = settings.get("provider", "openai")
+    api_key = settings.get("api_key", "")
+    if provider == "openai" and not api_key:
+        st.error("⚠️ OpenAI API key required. Enter it in the sidebar or switch to 'dummy' provider.")
+        return
+    
+    pipeline = get_pipeline(settings)
     pdf_service = st.session_state.pdf_service
     
     progress_bar = st.progress(0)
@@ -472,6 +599,9 @@ def main():
     
     # Sidebar settings
     settings = render_sidebar()
+    
+    # Store settings in session state for other functions to access
+    st.session_state._current_settings = settings
     
     # Update PDF service DPI
     st.session_state.pdf_service.dpi = settings["render_dpi"]

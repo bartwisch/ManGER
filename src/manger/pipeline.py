@@ -19,7 +19,7 @@ from PIL import Image
 
 from manger.config import AppConfig, get_config
 from manger.domain.models import MangaPage, ProcessingResult, TextBlock
-from manger.services.ocr import BaseOCRService, DummyOCRService, OCRError
+from manger.services.ocr import BaseOCRService, create_ocr_service, OCRError
 from manger.services.translator import (
     BaseTranslator,
     DummyTranslator,
@@ -62,7 +62,7 @@ class MangaPipeline:
         self.config = config or get_config()
         
         # Initialize services
-        self.ocr = ocr_service or DummyOCRService(self.config.ocr)
+        self.ocr = ocr_service or create_ocr_service(self.config.ocr)
         self.translator = translator or create_translator(self.config.translation)
         self.renderer = renderer or Renderer(self.config.render)
         

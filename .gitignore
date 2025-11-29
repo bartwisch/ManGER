@@ -163,4 +163,4 @@ temp/
 !tests/fixtures/*
 
 # Streamlit
-.streamlit/secrets.toml
+.streamlit/secrets.toml.env

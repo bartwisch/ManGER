@@ -14,6 +14,7 @@ import tempfile
 
 from loguru import logger
 from PIL import Image
+import fitz
 
 if TYPE_CHECKING:
     pass
@@ -180,10 +181,11 @@ class PDFService:
             # Calculate zoom factor for desired DPI
             # Default PDF resolution is 72 DPI
             zoom = dpi / 72.0
-            mat = page.get_pixmap(matrix=page.get_matrix(zoom))
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat)
             
             # Convert to PIL Image
-            img = Image.frombytes("RGB", [mat.width, mat.height], mat.samples)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             
             logger.debug(
                 f"Extracted page {page_number}: {img.size[0]}x{img.size[1]} at {dpi} DPI"

@@ -46,7 +46,7 @@ class TranslationConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="MANGER_TRANSLATE_")
     
     provider: Literal["openai", "deepl", "dummy"] = Field(
-        default="dummy",
+        default="openai",
         description="Translation provider to use",
     )
     openai_api_key: str | None = Field(
@@ -62,11 +62,11 @@ class TranslationConfig(BaseSettings):
         description="DeepL API key",
     )
     source_language: str = Field(
-        default="ja",
+        default="en",
         description="Source language code",
     )
     target_language: str = Field(
-        default="en",
+        default="de",
         description="Target language code",
     )
     batch_size: int = Field(

@@ -5,7 +5,7 @@ all coordinates are normalized immediately upon detection.
 """
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 import random
 
 from loguru import logger
@@ -17,6 +17,16 @@ from manger.config import OCRConfig, get_config
 
 if TYPE_CHECKING:
     pass
+
+# Check for torch/transformers availability
+try:
+    import torch
+    from transformers import AutoModel
+    MAGI_AVAILABLE = True
+except ImportError:
+    MAGI_AVAILABLE = False
+    torch = None
+    AutoModel = None
 
 
 class OCRError(Exception):
@@ -202,35 +212,174 @@ class DummyOCRService(BaseOCRService):
 class MagiOCRService(BaseOCRService):
     """OCR service using the Magi (Manga Whisperer) model.
     
-    This is a placeholder for the actual Magi integration.
+    Uses Magiv2 from HuggingFace: ragavsachdeva/magiv2
+    This model provides:
+    - Text detection and OCR
+    - Character detection
+    - Panel detection
+    - Text-to-character associations
+    
     Requires: pip install manger[magi]
     """
     
     def __init__(self, config: OCRConfig | None = None):
         super().__init__(config)
         self._model = None
+        self._device = None
     
     def load_model(self) -> None:
-        """Load the Magi model."""
-        try:
-            # This would be the actual Magi model loading
-            # from magi import MagiModel
-            # self._model = MagiModel.load()
-            logger.warning(
-                "Magi model not available. Install with: pip install manger[magi]"
-            )
+        """Load the Magi model from HuggingFace."""
+        if not MAGI_AVAILABLE:
             raise OCRModelLoadError(
-                "Magi model not installed. Use DummyOCRService for testing."
+                "Magi dependencies not installed. Install with: pip install manger[magi]"
             )
-        except ImportError as e:
-            raise OCRModelLoadError(f"Failed to import Magi: {e}") from e
+        
+        try:
+            logger.info("Loading Magi model from HuggingFace...")
+            
+            # Determine device
+            if torch.cuda.is_available():
+                self._device = "cuda"
+                logger.info("Using CUDA for Magi model")
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                self._device = "mps"
+                logger.info("Using MPS (Apple Silicon) for Magi model")
+            else:
+                self._device = "cpu"
+                logger.warning("Using CPU for Magi model - this will be slow")
+            
+            # Load model
+            self._model = AutoModel.from_pretrained(
+                "ragavsachdeva/magiv2",
+                trust_remote_code=True
+            )
+            self._model = self._model.to(self._device).eval()
+            
+            self._model_loaded = True
+            logger.info("Magi model loaded successfully")
+            
+        except Exception as e:
+            raise OCRModelLoadError(f"Failed to load Magi model: {e}") from e
+    
+    def _prepare_image(self, image: Image.Image) -> np.ndarray:
+        """Convert PIL Image to format expected by Magi.
+        
+        Magi expects RGB numpy arrays.
+        """
+        # Ensure RGB mode
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        return np.array(image)
     
     def detect_text(self, image: Image.Image) -> list[TextBlock]:
-        """Detect text using Magi model."""
-        if self._model is None:
-            raise OCRProcessingError("Model not loaded")
+        """Detect text using Magi model.
         
-        # Placeholder for actual Magi processing
-        # results = self._model.detect(image)
-        # return self._convert_magi_results(results, image.size)
-        return []
+        This performs full detection including:
+        - Text bounding boxes
+        - OCR on detected text regions
+        - Character detection (for speaker association)
+        """
+        if self._model is None:
+            raise OCRProcessingError("Model not loaded. Call load_model() first.")
+        
+        width, height = image.size
+        np_image = self._prepare_image(image)
+        
+        logger.debug(f"Running Magi detection on image {width}x{height}")
+        
+        try:
+            with torch.no_grad():
+                # For single image processing, we use predict_detections_and_associations
+                # which returns text boxes, character boxes, etc.
+                results = self._model.predict_detections_and_associations([np_image])
+                result = results[0]  # Get first (only) image result
+                
+                # Get text bounding boxes
+                text_bboxes = result.get("texts", [])
+                
+                if len(text_bboxes) == 0:
+                    logger.debug("No text detected by Magi")
+                    return []
+                
+                # Run OCR on detected text regions
+                ocr_results = self._model.predict_ocr(
+                    [np_image], 
+                    [text_bboxes]
+                )
+                ocr_texts = ocr_results[0] if ocr_results else []
+                
+                # Get character associations if available
+                text_char_associations = result.get("text_character_associations", [])
+                is_essential = result.get("is_essential_text", [True] * len(text_bboxes))
+                
+                # Build association map: text_idx -> character_idx
+                speaker_map = {}
+                for text_idx, char_idx in text_char_associations:
+                    speaker_map[text_idx] = char_idx
+                
+        except Exception as e:
+            raise OCRProcessingError(f"Magi detection failed: {e}") from e
+        
+        # Convert results to TextBlock objects
+        blocks = []
+        for i, bbox in enumerate(text_bboxes):
+            # Magi returns [x_min, y_min, x_max, y_max] in pixel coordinates
+            x_min, y_min, x_max, y_max = bbox[:4]
+            
+            # Get OCR text (if available)
+            text = ocr_texts[i] if i < len(ocr_texts) else ""
+            
+            # Get speaker ID if associated
+            speaker_id = speaker_map.get(i)
+            
+            # Determine if text is vertical (heuristic based on aspect ratio)
+            box_width = x_max - x_min
+            box_height = y_max - y_min
+            is_vertical = box_height > box_width * 1.5 if box_width > 0 else False
+            
+            # Check if this is essential text (dialogue vs. SFX)
+            essential = is_essential[i] if i < len(is_essential) else True
+            
+            block = TextBlock(
+                bbox=self._normalize_coordinates(
+                    int(x_min), int(y_min), int(x_max), int(y_max),
+                    width, height
+                ),
+                original_text=text,
+                confidence=0.9,  # Magi doesn't provide per-box confidence
+                is_vertical=is_vertical,
+                speaker_id=speaker_id,
+                raw_ocr_result={
+                    "source": "magi",
+                    "index": i,
+                    "is_essential": essential,
+                    "bbox_pixels": [int(x_min), int(y_min), int(x_max), int(y_max)],
+                },
+            )
+            blocks.append(block)
+        
+        logger.debug(f"Magi detected {len(blocks)} text blocks")
+        return blocks
+
+
+def create_ocr_service(config: OCRConfig | None = None) -> BaseOCRService:
+    """Factory function to create the appropriate OCR service.
+    
+    Attempts to use Magi if available, falls back to DummyOCRService.
+    
+    Args:
+        config: OCR configuration
+        
+    Returns:
+        Appropriate OCR service instance
+    """
+    if MAGI_AVAILABLE:
+        logger.info("Magi OCR is available, using MagiOCRService")
+        return MagiOCRService(config)
+    else:
+        logger.warning(
+            "Magi OCR not available (missing torch/transformers). "
+            "Install with: pip install manger[magi]. "
+            "Using DummyOCRService for testing."
+        )
+        return DummyOCRService(config)
