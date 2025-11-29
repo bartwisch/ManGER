@@ -158,17 +158,16 @@ class BaseOCRService(ABC):
         x_max: int,
         y_max: int,
     ) -> tuple[int, int, int] | None:
-        """Extract the dominant text color from a region.
+        """Determine text color based on background brightness.
         
-        Analyzes the region to find the most common non-background color,
-        which is typically the text color.
+        Returns white text for dark backgrounds, black text for light backgrounds.
         
         Args:
             image: Source image
             x_min, y_min, x_max, y_max: Pixel coordinates
             
         Returns:
-            RGB tuple of the detected text color, or None if unable to detect
+            RGB tuple - either white (255,255,255) or black (0,0,0)
         """
         try:
             # Ensure valid crop coordinates
@@ -193,49 +192,27 @@ class BaseOCRService(ABC):
             if not pixels:
                 return None
             
-            # Group colors by similarity (to handle anti-aliasing)
-            def quantize_color(rgb: tuple[int, int, int], step: int = 32) -> tuple[int, int, int]:
-                return (
-                    (rgb[0] // step) * step,
-                    (rgb[1] // step) * step,
-                    (rgb[2] // step) * step,
-                )
+            # Calculate average brightness
+            total_brightness = 0
+            for r, g, b in pixels:
+                # Perceived brightness formula
+                brightness = 0.299 * r + 0.587 * g + 0.114 * b
+                total_brightness += brightness
             
-            # Count quantized colors
-            color_counts = Counter(quantize_color(p) for p in pixels)
+            avg_brightness = total_brightness / len(pixels)
             
-            # Calculate brightness
-            def brightness(rgb: tuple[int, int, int]) -> float:
-                return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+            # If background is dark (< 128), use white text
+            # If background is light (>= 128), use black text
+            if avg_brightness < 128:
+                text_color = (255, 255, 255)  # White
+            else:
+                text_color = (0, 0, 0)  # Black
             
-            # White/light colors are likely background
-            def is_background(rgb: tuple[int, int, int]) -> bool:
-                return brightness(rgb) > 200
-            
-            # Filter out background colors
-            text_colors = [
-                (color, count) 
-                for color, count in color_counts.items() 
-                if not is_background(color)
-            ]
-            
-            if not text_colors:
-                return None
-            
-            # Sort by count (most common first)
-            text_colors.sort(key=lambda x: x[1], reverse=True)
-            
-            # Take the most common non-background color
-            dominant_color = text_colors[0][0]
-            
-            # Boost color slightly (quantization may have dulled it)
-            boosted = tuple(min(255, c + 16) for c in dominant_color)
-            
-            logger.debug(f"Detected text color: {boosted}")
-            return boosted
+            logger.debug(f"Background brightness: {avg_brightness:.1f}, using text color: {text_color}")
+            return text_color
             
         except Exception as e:
-            logger.warning(f"Failed to extract text color: {e}")
+            logger.warning(f"Failed to determine text color: {e}")
             return None
 
 
