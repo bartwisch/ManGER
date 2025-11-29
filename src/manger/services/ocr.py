@@ -261,15 +261,57 @@ class MagiOCRService(BaseOCRService):
         except Exception as e:
             raise OCRModelLoadError(f"Failed to load Magi model: {e}") from e
     
-    def _prepare_image(self, image: Image.Image) -> np.ndarray:
-        """Convert PIL Image to format expected by Magi.
+    def _prepare_image(self, image: Image.Image, scale_factor: int = 2) -> tuple[np.ndarray, int]:
+        """Convert PIL Image to format expected by Magi with preprocessing.
         
-        Magi expects RGB numpy arrays.
+        Applies scaling and contrast enhancement for better OCR results.
+        
+        Args:
+            image: PIL Image
+            scale_factor: How much to scale up the image (2 = double size)
+            
+        Returns:
+            Tuple of (processed numpy array, scale_factor used)
         """
         # Ensure RGB mode
         if image.mode != "RGB":
             image = image.convert("RGB")
-        return np.array(image)
+        
+        img_array = np.array(image)
+        
+        # Import cv2 for preprocessing
+        try:
+            import cv2
+            
+            # Scale up for better recognition of small/thin characters
+            if scale_factor > 1:
+                img_array = cv2.resize(
+                    img_array, None, 
+                    fx=scale_factor, fy=scale_factor, 
+                    interpolation=cv2.INTER_CUBIC
+                )
+            
+            # Convert to grayscale for enhancement
+            gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+            
+            # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+            # This helps with varying lighting and improves character edges
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(gray)
+            
+            # Light denoising to preserve details but reduce noise
+            denoised = cv2.fastNlMeansDenoising(enhanced, h=5, templateWindowSize=7, searchWindowSize=21)
+            
+            # Convert back to RGB (Magi expects RGB)
+            img_array = cv2.cvtColor(denoised, cv2.COLOR_GRAY2RGB)
+            
+            logger.debug(f"Preprocessed image: scaled {scale_factor}x, applied CLAHE and denoising")
+            
+        except ImportError:
+            logger.warning("OpenCV not available, skipping preprocessing")
+            scale_factor = 1
+        
+        return img_array, scale_factor
     
     def detect_text(self, image: Image.Image) -> list[TextBlock]:
         """Detect text using Magi model.
@@ -283,9 +325,9 @@ class MagiOCRService(BaseOCRService):
             raise OCRProcessingError("Model not loaded. Call load_model() first.")
         
         width, height = image.size
-        np_image = self._prepare_image(image)
+        np_image, scale_factor = self._prepare_image(image, scale_factor=2)
         
-        logger.debug(f"Running Magi detection on image {width}x{height}")
+        logger.debug(f"Running Magi detection on image {width}x{height} (scaled {scale_factor}x)")
         
         try:
             with torch.no_grad():
@@ -330,15 +372,18 @@ class MagiOCRService(BaseOCRService):
             
             # Check if coordinates are already normalized (0-1 range)
             if all(0 <= coord <= 1 for coord in bbox[:4]):
-                # Already normalized
+                # Already normalized - scale factor doesn't apply
                 x_min, y_min, x_max, y_max = bbox[:4]
                 x_min_px = int(x_min * width)
                 y_min_px = int(y_min * height)
                 x_max_px = int(x_max * width)
                 y_max_px = int(y_max * height)
             else:
-                # Pixel coordinates
-                x_min_px, y_min_px, x_max_px, y_max_px = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+                # Pixel coordinates - need to scale back to original size
+                x_min_px = int(bbox[0] / scale_factor)
+                y_min_px = int(bbox[1] / scale_factor)
+                x_max_px = int(bbox[2] / scale_factor)
+                y_max_px = int(bbox[3] / scale_factor)
             
             # Apply minimal padding - just enough to not cut off text
             # Keep it tight so polygon detection works better
