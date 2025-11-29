@@ -200,12 +200,14 @@ class Renderer:
     ) -> list[tuple[int, int]] | None:
         """Detect the speech bubble boundary around text.
         
-        Looks for a closed contour (dark line on light background) that
-        encloses the text bounding box.
+        Creates a smooth ellipse that fits within the detected bubble area.
+        This ensures no sharp corners ever appear.
         
         Returns:
             Polygon points or None if no bubble found
         """
+        import math
+        
         # Crop the search region
         region = image.crop((search_x1, search_y1, search_x2, search_y2))
         region_gray = region.convert("L")
@@ -214,11 +216,9 @@ class Renderer:
         h, w = region_np.shape
         
         # Detect edges - speech bubbles typically have dark outlines
-        # Use Sobel-like edge detection
         edges = self._detect_edges(region_np)
         
         # Find the enclosing contour
-        # Start from the center (where text is) and expand outward
         text_center_x = (text_x1 + text_x2) // 2 - search_x1
         text_center_y = (text_y1 + text_y2) // 2 - search_y1
         
@@ -232,41 +232,37 @@ class Renderer:
         if bubble_mask is None:
             return None
         
-        # Erode the mask to shrink it inward (away from the bubble outline)
-        # This ensures we don't overwrite the speech bubble border
+        # Erode the mask to shrink it inward
         bubble_mask = self._erode_mask(bubble_mask, iterations=12)
         
         if bubble_mask is None or np.sum(bubble_mask) < 100:
             return None
         
-        # Extract boundary points from the mask (already ordered by contour tracing)
-        boundary_points = self._extract_boundary(bubble_mask)
-        
-        if len(boundary_points) < 10:
+        # Find the bounding box of the mask
+        ys, xs = np.where(bubble_mask > 0)
+        if len(xs) < 10:
             return None
         
-        # Validate/reorder the boundary points if needed
-        ordered_points = self._order_boundary_points(boundary_points)
+        mask_x1, mask_x2 = xs.min(), xs.max()
+        mask_y1, mask_y2 = ys.min(), ys.max()
         
-        # Simplify the polygon to reduce points while preserving curves
-        # Very low tolerance = many points = very smooth curves
-        simplified = self._simplify_polygon(ordered_points, tolerance=1.0)
+        # Calculate ellipse parameters - use smaller radius to stay inside bubble
+        center_x = (mask_x1 + mask_x2) / 2
+        center_y = (mask_y1 + mask_y2) / 2
+        radius_x = (mask_x2 - mask_x1) / 2 * 0.82  # Smaller to stay inside
+        radius_y = (mask_y2 - mask_y1) / 2 * 0.82
         
-        # Ensure we have enough points for smooth curves (at least 20)
-        if len(simplified) < 20 and len(ordered_points) >= 20:
-            # Use less simplification
-            simplified = self._simplify_polygon(ordered_points, tolerance=0.5)
-        
-        # Smooth the polygon very aggressively to round off ALL corners
-        # This is critical to avoid 90-degree angles
-        smoothed = self._smooth_polygon(simplified, iterations=15)
-        
-        # Shrink polygon inward to create buffer from bubble outline
-        # Use percentage-based shrinking for better scaling across different bubble sizes
-        shrunk = self._shrink_polygon_percent(smoothed, percent=0.15)
+        # Generate ellipse points - many points for smooth curve
+        num_points = 64
+        ellipse_points = []
+        for i in range(num_points):
+            angle = 2 * math.pi * i / num_points
+            x = center_x + radius_x * math.cos(angle)
+            y = center_y + radius_y * math.sin(angle)
+            ellipse_points.append((x, y))
         
         # Convert to absolute coordinates
-        polygon = [(int(p[0] + search_x1), int(p[1] + search_y1)) for p in shrunk]
+        polygon = [(int(p[0] + search_x1), int(p[1] + search_y1)) for p in ellipse_points]
         
         return polygon
     
@@ -275,7 +271,7 @@ class Renderer:
         polygon: list[tuple[float, float]],
         iterations: int = 2
     ) -> list[tuple[float, float]]:
-        """Smooth a polygon by averaging neighboring vertices.
+        """Smooth a polygon by averaging neighboring vertices using Chaikin's algorithm.
         
         This rounds off sharp corners that might poke outside the bubble.
         
@@ -533,72 +529,46 @@ class Renderer:
         return mask
     
     def _extract_boundary(self, mask: np.ndarray) -> list[tuple[int, int]]:
-        """Extract boundary points from a binary mask using contour tracing.
+        """Extract boundary points from a binary mask.
         
-        Uses Moore-Neighbor tracing algorithm to get properly ordered boundary points.
+        Returns boundary points sorted by angle from centroid for proper polygon order.
         
         Returns:
             List of (x, y) boundary points in order along the contour
         """
-        h, w = mask.shape
+        import math
         
-        # Find starting point (first white pixel from top-left)
-        start = None
+        h, w = mask.shape
+        boundary = []
+        
+        # Find all boundary pixels
         for y in range(h):
             for x in range(w):
                 if mask[y, x] > 0:
-                    start = (x, y)
-                    break
-            if start:
-                break
-        
-        if not start:
-            return []
-        
-        # Moore-Neighbor tracing
-        # Direction: 0=right, 1=down-right, 2=down, 3=down-left, 4=left, 5=up-left, 6=up, 7=up-right
-        directions = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
-        
-        boundary = [start]
-        current = start
-        # Start by looking in the direction we came from (left, since we scanned left-to-right)
-        direction = 4  # Start looking left
-        
-        max_iterations = w * h * 2  # Safety limit
-        iterations = 0
-        
-        while iterations < max_iterations:
-            iterations += 1
-            
-            # Look for next boundary pixel, starting from backtrack direction + 1
-            found = False
-            start_dir = (direction + 5) % 8  # Backtrack and turn right
-            
-            for i in range(8):
-                check_dir = (start_dir + i) % 8
-                dx, dy = directions[check_dir]
-                nx, ny = current[0] + dx, current[1] + dy
-                
-                if 0 <= nx < w and 0 <= ny < h and mask[ny, nx] > 0:
-                    if (nx, ny) == start and len(boundary) > 2:
-                        # We've completed the loop
-                        return boundary
+                    # Check if this is a boundary pixel (has at least one non-white neighbor)
+                    is_boundary = False
+                    for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        ny, nx = y + dy, x + dx
+                        if ny < 0 or ny >= h or nx < 0 or nx >= w:
+                            is_boundary = True
+                            break
+                        if mask[ny, nx] == 0:
+                            is_boundary = True
+                            break
                     
-                    if (nx, ny) not in boundary[-10:]:  # Avoid immediate backtracking
-                        current = (nx, ny)
-                        boundary.append(current)
-                        direction = check_dir
-                        found = True
-                        break
-            
-            if not found:
-                break
-            
-            # Safety: if boundary is too long, we're probably stuck
-            if len(boundary) > w * h // 2:
-                break
+                    if is_boundary:
+                        boundary.append((x, y))
         
-        return boundary
+        if len(boundary) < 3:
+            return boundary
+        
+        # Sort by angle from centroid - this guarantees proper polygon order
+        cx = sum(p[0] for p in boundary) / len(boundary)
+        cy = sum(p[1] for p in boundary) / len(boundary)
+        
+        sorted_boundary = sorted(boundary, key=lambda p: math.atan2(p[1] - cy, p[0] - cx))
+        
+        return sorted_boundary
     
     def _order_boundary_points(
         self,
@@ -606,18 +576,9 @@ class Renderer:
     ) -> list[tuple[int, int]]:
         """Order boundary points to form a proper closed contour.
         
-        Since _extract_boundary now returns ordered points, this just validates and returns them.
-        Falls back to angle-based sorting if points seem unordered.
+        Points are already sorted by angle, so just return them.
         """
-        if len(points) < 3:
-            return points
-        
-        # Check if points are already roughly ordered by checking total path length
-        # vs convex hull perimeter - if path is much longer, points are probably unordered
-        import math
-        
-        # Calculate path length
-        path_length = 0
+        return list(points)
         for i in range(len(points)):
             p1 = points[i]
             p2 = points[(i + 1) % len(points)]
@@ -632,12 +593,7 @@ class Renderer:
         expected_perimeter = 2 * math.sqrt(math.pi * area)
         
         # If path is more than 3x expected, points are probably unordered
-        if path_length > expected_perimeter * 3:
-            return sorted(points, key=lambda p: math.atan2(p[1] - cy, p[0] - cx))
-        
         return list(points)
-        
-        return ordered
     
     def _simplify_polygon(
         self,

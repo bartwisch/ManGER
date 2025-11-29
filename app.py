@@ -287,7 +287,7 @@ def draw_text_boxes(image: Image.Image, blocks: list, show_text: bool = True, sh
         "detected": (255, 0, 0),      # Red for detected only
         "translated": (0, 255, 0),    # Green for translated
         "group": (0, 100, 255),       # Blue for group boxes
-        "polygon": (255, 165, 0),     # Orange for text polygons
+        "polygon": (255, 0, 255),     # Pink/Magenta for text polygons
     }
     
     # First, draw group boxes (so they appear behind individual boxes)
@@ -366,7 +366,7 @@ def draw_text_boxes(image: Image.Image, blocks: list, show_text: bool = True, sh
                     p1 = smoothed_polygon[j]
                     p2 = smoothed_polygon[(j + 1) % len(smoothed_polygon)]
                     # Draw thick line
-                    draw.line([p1, p2], fill=(255, 165, 0), width=3)
+                    draw.line([p1, p2], fill=(255, 0, 255), width=3)
     
     # Then draw individual block boxes
     for i, block in enumerate(blocks):
