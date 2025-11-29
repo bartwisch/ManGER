@@ -170,13 +170,22 @@ class Renderer:
         width, height = image.size
         x1, y1, x2, y2 = bbox.to_pixels(width, height)
         
-        # NO padding - stay exactly within the OCR bounding box
-        # Actually shrink slightly inward to ensure we're inside
-        shrink = 2  # pixels inward
-        x1 = x1 + shrink
-        y1 = y1 + shrink
-        x2 = x2 - shrink
-        y2 = y2 - shrink
+        # EXPAND the polygon to cover all text including edges
+        # Match the shift_left and expand_width from app.py display
+        shift_left = 12
+        expand_width = 8
+        expand_height = 4  # Small vertical padding too
+        
+        x1 = x1 - shift_left - expand_width
+        x2 = x2 - shift_left + expand_width
+        y1 = y1 - expand_height
+        y2 = y2 + expand_height
+        
+        # Ensure we stay within image bounds
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(width, x2)
+        y2 = min(height, y2)
         
         # Calculate corner radius (proportional to smaller dimension)
         box_w = x2 - x1
