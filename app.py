@@ -72,6 +72,73 @@ def save_api_key_to_env(api_key: str) -> None:
             logger.warning(f"Failed to save API key: {e}")
 
 
+def group_text_blocks(blocks: list, distance_threshold: float = 0.05) -> list[list[int]]:
+    """Group text blocks that are close together (likely in same speech bubble).
+    
+    Args:
+        blocks: List of TextBlock objects
+        distance_threshold: Maximum normalized distance to consider blocks as connected
+        
+    Returns:
+        List of groups, where each group is a list of block indices
+    """
+    if not blocks:
+        return []
+    
+    n = len(blocks)
+    # Track which group each block belongs to
+    parent = list(range(n))
+    
+    def find(x):
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+    
+    def union(x, y):
+        px, py = find(x), find(y)
+        if px != py:
+            parent[px] = py
+    
+    # Check each pair of blocks for proximity
+    for i in range(n):
+        for j in range(i + 1, n):
+            bbox_i = blocks[i].bbox
+            bbox_j = blocks[j].bbox
+            
+            # Calculate distance between boxes (minimum edge distance)
+            # Horizontal distance
+            if bbox_i.x_max < bbox_j.x_min:
+                dx = bbox_j.x_min - bbox_i.x_max
+            elif bbox_j.x_max < bbox_i.x_min:
+                dx = bbox_i.x_min - bbox_j.x_max
+            else:
+                dx = 0  # Overlapping horizontally
+            
+            # Vertical distance
+            if bbox_i.y_max < bbox_j.y_min:
+                dy = bbox_j.y_min - bbox_i.y_max
+            elif bbox_j.y_max < bbox_i.y_min:
+                dy = bbox_i.y_min - bbox_j.y_max
+            else:
+                dy = 0  # Overlapping vertically
+            
+            # If close enough, group them
+            distance = (dx ** 2 + dy ** 2) ** 0.5
+            if distance < distance_threshold:
+                union(i, j)
+    
+    # Build groups
+    groups_dict = {}
+    for i in range(n):
+        root = find(i)
+        if root not in groups_dict:
+            groups_dict[root] = []
+        groups_dict[root].append(i)
+    
+    # Only return groups with more than one block
+    return [g for g in groups_dict.values() if len(g) > 1]
+
+
 def draw_text_boxes(image: Image.Image, blocks: list, show_text: bool = True) -> Image.Image:
     """Draw bounding boxes around detected text blocks.
     
@@ -93,8 +160,72 @@ def draw_text_boxes(image: Image.Image, blocks: list, show_text: bool = True) ->
     colors = {
         "detected": (255, 0, 0),      # Red for detected only
         "translated": (0, 255, 0),    # Green for translated
+        "group": (0, 100, 255),       # Blue for group boxes
     }
     
+    # First, draw group boxes (so they appear behind individual boxes)
+    groups = group_text_blocks(blocks)
+    for group_idx, group in enumerate(groups):
+        # Calculate bounding box that encompasses all blocks in group
+        min_x = min(blocks[i].bbox.x_min for i in group)
+        min_y = min(blocks[i].bbox.y_min for i in group)
+        max_x = max(blocks[i].bbox.x_max for i in group)
+        max_y = max(blocks[i].bbox.y_max for i in group)
+        
+        # Add some padding
+        padding = 0.01
+        min_x = max(0, min_x - padding)
+        min_y = max(0, min_y - padding)
+        max_x = min(1, max_x + padding)
+        max_y = min(1, max_y + padding)
+        
+        # Convert to pixels
+        gx1 = int(min_x * width)
+        gy1 = int(min_y * height)
+        gx2 = int(max_x * width)
+        gy2 = int(max_y * height)
+        
+        # Draw dashed rectangle for group
+        group_color = colors["group"]
+        dash_length = 10
+        gap_length = 5
+        
+        # Top edge
+        x = gx1
+        while x < gx2:
+            draw.line([(x, gy1), (min(x + dash_length, gx2), gy1)], fill=group_color, width=3)
+            x += dash_length + gap_length
+        
+        # Bottom edge
+        x = gx1
+        while x < gx2:
+            draw.line([(x, gy2), (min(x + dash_length, gx2), gy2)], fill=group_color, width=3)
+            x += dash_length + gap_length
+        
+        # Left edge
+        y = gy1
+        while y < gy2:
+            draw.line([(gx1, y), (gx1, min(y + dash_length, gy2))], fill=group_color, width=3)
+            y += dash_length + gap_length
+        
+        # Right edge
+        y = gy1
+        while y < gy2:
+            draw.line([(gx2, y), (gx2, min(y + dash_length, gy2))], fill=group_color, width=3)
+            y += dash_length + gap_length
+        
+        # Draw group label
+        try:
+            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 16)
+        except:
+            font = ImageFont.load_default()
+        
+        group_label = f"Gruppe {group_idx + 1}"
+        label_bbox = draw.textbbox((gx1, gy1 - 25), group_label, font=font)
+        draw.rectangle([label_bbox[0] - 2, label_bbox[1] - 2, label_bbox[2] + 2, label_bbox[3] + 2], fill=group_color)
+        draw.text((gx1, gy1 - 25), group_label, fill=(255, 255, 255), font=font)
+    
+    # Then draw individual block boxes
     for i, block in enumerate(blocks):
         # Convert normalized coordinates to pixels
         bbox = block.bbox
@@ -474,7 +605,9 @@ def render_page_viewer():
         if page_data["blocks"]:
             img_with_boxes = draw_text_boxes(page_data["image"], page_data["blocks"])
             st.image(img_with_boxes, use_container_width=True)
-            st.caption(f"🔴 Red = detected, 🟢 Green = translated ({len(page_data['blocks'])} blocks)")
+            groups = group_text_blocks(page_data["blocks"])
+            num_groups = len(groups)
+            st.caption(f"🔴 Red = detected, 🟢 Green = translated, 🔵 Blue = grouped ({len(page_data['blocks'])} blocks, {num_groups} groups)")
         else:
             st.image(page_data["image"], use_container_width=True)
     
