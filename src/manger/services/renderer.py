@@ -234,7 +234,7 @@ class Renderer:
         
         # Erode the mask to shrink it inward (away from the bubble outline)
         # This ensures we don't overwrite the speech bubble border
-        bubble_mask = self._erode_mask(bubble_mask, iterations=18)
+        bubble_mask = self._erode_mask(bubble_mask, iterations=10)
         
         if bubble_mask is None or np.sum(bubble_mask) < 100:
             return None
@@ -249,11 +249,11 @@ class Renderer:
         simplified = self._simplify_polygon(boundary_points, tolerance=3.0)
         
         # Smooth the polygon more aggressively to round off sharp corners
-        smoothed = self._smooth_polygon(simplified, iterations=8)
+        smoothed = self._smooth_polygon(simplified, iterations=6)
         
         # Shrink polygon inward to create buffer from bubble outline
         # Use percentage-based shrinking for better scaling across different bubble sizes
-        shrunk = self._shrink_polygon_percent(smoothed, percent=0.25)
+        shrunk = self._shrink_polygon_percent(smoothed, percent=0.12)
         
         # Convert to absolute coordinates
         polygon = [(int(p[0] + search_x1), int(p[1] + search_y1)) for p in shrunk]

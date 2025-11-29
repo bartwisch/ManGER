@@ -6,6 +6,7 @@ Run with: streamlit run app.py
 
 import sys
 import os
+import base64
 from pathlib import Path
 
 # Add src to path for imports
@@ -18,6 +19,41 @@ from loguru import logger
 
 # .env file path
 ENV_FILE = Path(__file__).parent / ".env"
+
+# Notification sound (base64 encoded short beep)
+NOTIFICATION_SOUND_HTML = """
+<script>
+(function() {
+    var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    var oscillator = audioCtx.createOscillator();
+    var gainNode = audioCtx.createGain();
+    
+    oscillator.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    
+    oscillator.frequency.value = 800;
+    oscillator.type = 'sine';
+    gainNode.gain.value = 0.3;
+    
+    oscillator.start();
+    oscillator.stop(audioCtx.currentTime + 0.2);
+    
+    setTimeout(function() {
+        var oscillator2 = audioCtx.createOscillator();
+        oscillator2.connect(gainNode);
+        oscillator2.frequency.value = 1000;
+        oscillator2.type = 'sine';
+        oscillator2.start();
+        oscillator2.stop(audioCtx.currentTime + 0.3);
+    }, 200);
+})();
+</script>
+"""
+
+
+def play_notification_sound():
+    """Play a notification sound using JavaScript."""
+    st.components.v1.html(NOTIFICATION_SOUND_HTML, height=0)
 
 
 def load_api_key_from_env() -> str:
@@ -480,6 +516,12 @@ def render_sidebar():
         help="Show precise text polygons instead of bounding boxes (orange overlay)",
     )
     
+    play_sound = st.sidebar.checkbox(
+        "🔔 Play Sound When Ready",
+        value=True,
+        help="Play a notification sound when processing is complete",
+    )
+    
     st.sidebar.divider()
     
     st.sidebar.info(
@@ -498,6 +540,7 @@ def render_sidebar():
         "show_polygons": show_polygons,
         "ocr_engine": ocr_engine,
         "magi_version": magi_version,
+        "play_sound": play_sound,
     }
 
 
@@ -551,6 +594,11 @@ def _process_all_selected_pages(settings: dict):
     
     progress_bar.progress(1.0, text="Complete!")
     st.success(f"✓ Processed {total} pages!")
+    
+    # Play notification sound if enabled
+    if settings.get("play_sound", True):
+        play_notification_sound()
+    
     st.rerun()
 
 
@@ -768,6 +816,8 @@ def render_page_viewer():
                         page_data["result"] = result
                 
                 st.success("✓ Rendering complete!")
+                if settings.get("play_sound", True):
+                    play_notification_sound()
                 st.rerun()
     
     # Display original and processed images side by side
@@ -845,6 +895,8 @@ def render_page_viewer():
                         page_data["result"] = result
                 
                 st.success("✓ Rendering complete!")
+                if settings.get("play_sound", True):
+                    play_notification_sound()
                 st.rerun()
     
     st.divider()
