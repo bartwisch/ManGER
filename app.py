@@ -139,13 +139,14 @@ def group_text_blocks(blocks: list, distance_threshold: float = 0.05) -> list[li
     return [g for g in groups_dict.values() if len(g) > 1]
 
 
-def draw_text_boxes(image: Image.Image, blocks: list, show_text: bool = True) -> Image.Image:
+def draw_text_boxes(image: Image.Image, blocks: list, show_text: bool = True, show_polygons: bool = False) -> Image.Image:
     """Draw bounding boxes around detected text blocks.
     
     Args:
         image: Original PIL Image
         blocks: List of TextBlock objects with bounding boxes
         show_text: Whether to show the detected text above boxes
+        show_polygons: Whether to show precise text polygons instead of rectangles
     
     Returns:
         Image with drawn bounding boxes
@@ -161,6 +162,7 @@ def draw_text_boxes(image: Image.Image, blocks: list, show_text: bool = True) ->
         "detected": (255, 0, 0),      # Red for detected only
         "translated": (0, 255, 0),    # Green for translated
         "group": (0, 100, 255),       # Blue for group boxes
+        "polygon": (255, 165, 0),     # Orange for text polygons
     }
     
     # First, draw group boxes (so they appear behind individual boxes)
@@ -224,6 +226,19 @@ def draw_text_boxes(image: Image.Image, blocks: list, show_text: bool = True) ->
         label_bbox = draw.textbbox((gx1, gy1 - 25), group_label, font=font)
         draw.rectangle([label_bbox[0] - 2, label_bbox[1] - 2, label_bbox[2] + 2, label_bbox[3] + 2], fill=group_color)
         draw.text((gx1, gy1 - 25), group_label, fill=(255, 255, 255), font=font)
+    
+    # Draw polygons if requested
+    if show_polygons:
+        renderer = Renderer()
+        for i, block in enumerate(blocks):
+            polygon = renderer.extract_text_polygon(image, block.bbox)
+            if len(polygon) >= 3:
+                # Draw filled polygon with transparency
+                overlay = Image.new("RGBA", img_with_boxes.size, (0, 0, 0, 0))
+                overlay_draw = ImageDraw.Draw(overlay)
+                overlay_draw.polygon(polygon, fill=(255, 165, 0, 80), outline=(255, 165, 0, 255))
+                img_with_boxes = Image.alpha_composite(img_with_boxes.convert("RGBA"), overlay).convert("RGB")
+                draw = ImageDraw.Draw(img_with_boxes)
     
     # Then draw individual block boxes
     for i, block in enumerate(blocks):
@@ -433,6 +448,13 @@ def render_sidebar():
         help="DPI for rendering PDF pages (higher = better quality but slower)",
     )
     
+    st.sidebar.subheader("Display Settings")
+    show_polygons = st.sidebar.checkbox(
+        "Show Text Polygons",
+        value=False,
+        help="Show precise text polygons instead of bounding boxes (orange overlay)",
+    )
+    
     st.sidebar.divider()
     
     st.sidebar.info(
@@ -448,6 +470,7 @@ def render_sidebar():
         "target_lang": target_lang,
         "font_size": font_size,
         "render_dpi": render_dpi,
+        "show_polygons": show_polygons,
     }
 
 
@@ -596,6 +619,10 @@ def render_page_viewer():
     
     page_data = st.session_state.pages_data[current_page_num]
     
+    # Get settings from session state
+    settings = st.session_state.get("_current_settings", {})
+    show_polygons = settings.get("show_polygons", False)
+    
     # Display original and processed images side by side
     col1, col2 = st.columns(2)
     
@@ -603,11 +630,15 @@ def render_page_viewer():
         st.write("**Original**")
         # If blocks detected, show image with bounding boxes
         if page_data["blocks"]:
-            img_with_boxes = draw_text_boxes(page_data["image"], page_data["blocks"])
+            img_with_boxes = draw_text_boxes(page_data["image"], page_data["blocks"], show_polygons=show_polygons)
             st.image(img_with_boxes, use_container_width=True)
             groups = group_text_blocks(page_data["blocks"])
             num_groups = len(groups)
-            st.caption(f"🔴 Red = detected, 🟢 Green = translated, 🔵 Blue = grouped ({len(page_data['blocks'])} blocks, {num_groups} groups)")
+            caption = "🔴 Red = detected, 🟢 Green = translated, 🔵 Blue = grouped"
+            if show_polygons:
+                caption += ", 🟠 Orange = text polygons"
+            caption += f" ({len(page_data['blocks'])} blocks, {num_groups} groups)"
+            st.caption(caption)
         else:
             st.image(page_data["image"], use_container_width=True)
     
@@ -622,9 +653,6 @@ def render_page_viewer():
     st.divider()
     
     btn_col1, btn_col2, btn_col3 = st.columns(3)
-    
-    # Get settings from session state (set by main)
-    settings = st.session_state.get("_current_settings", {})
     
     with btn_col1:
         if st.button("🔍 Detect Text", key=f"detect_{current_page_num}", use_container_width=True):
