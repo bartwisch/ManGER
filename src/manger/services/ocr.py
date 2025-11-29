@@ -340,13 +340,13 @@ class MagiOCRService(BaseOCRService):
                 # Pixel coordinates
                 x_min_px, y_min_px, x_max_px, y_max_px = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
             
-            # Apply padding to fix Magi's slightly off bounding boxes
-            # Expand box more on the left side where Magi tends to cut off text
+            # Apply minimal padding - just enough to not cut off text
+            # Keep it tight so polygon detection works better
             box_width = x_max_px - x_min_px
             box_height = y_max_px - y_min_px
-            padding_left = int(box_width * 0.12)   # 12% left padding
+            padding_left = int(box_width * 0.08)   # 8% left padding (was 5%)
             padding_right = int(box_width * 0.02)  # 2% right padding
-            padding_y = int(box_height * 0.05)     # 5% vertical padding
+            padding_y = int(box_height * 0.02)     # 2% vertical padding
             
             x_min_px = max(0, x_min_px - padding_left)
             y_min_px = max(0, y_min_px - padding_y)

@@ -451,7 +451,7 @@ def render_sidebar():
     st.sidebar.subheader("Display Settings")
     show_polygons = st.sidebar.checkbox(
         "Show Text Polygons",
-        value=False,
+        value=True,
         help="Show precise text polygons instead of bounding boxes (orange overlay)",
     )
     

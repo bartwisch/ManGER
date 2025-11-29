@@ -514,12 +514,37 @@ class Renderer:
         
         return boundary
     
+    def _order_boundary_points(
+        self,
+        points: list[tuple[int, int]]
+    ) -> list[tuple[int, int]]:
+        """Order boundary points to form a proper closed contour.
+        
+        Uses nearest-neighbor approach to trace the boundary.
+        """
+        if len(points) < 3:
+            return points
+        
+        # Start from the topmost-leftmost point
+        points = list(points)
+        ordered = [min(points, key=lambda p: (p[1], p[0]))]
+        points.remove(ordered[0])
+        
+        while points:
+            current = ordered[-1]
+            # Find nearest unvisited point
+            nearest = min(points, key=lambda p: (p[0]-current[0])**2 + (p[1]-current[1])**2)
+            ordered.append(nearest)
+            points.remove(nearest)
+        
+        return ordered
+    
     def _simplify_polygon(
         self,
         points: list[tuple[int, int]],
         tolerance: float = 2.0
     ) -> list[tuple[int, int]]:
-        """Simplify a polygon using Douglas-Peucker algorithm.
+        """Simplify a polygon using convex hull for cleaner shape.
         
         Args:
             points: List of polygon points
@@ -531,15 +556,17 @@ class Renderer:
         if len(points) < 3:
             return points
         
-        # Sort points by angle from centroid to create ordered polygon
-        cx = sum(p[0] for p in points) / len(points)
-        cy = sum(p[1] for p in points) / len(points)
+        # Use convex hull for a clean, simple polygon
+        hull = self._convex_hull(points)
         
-        import math
-        sorted_points = sorted(points, key=lambda p: math.atan2(p[1] - cy, p[0] - cx))
+        if len(hull) < 3:
+            # Fallback: sort by angle
+            cx = sum(p[0] for p in points) / len(points)
+            cy = sum(p[1] for p in points) / len(points)
+            import math
+            return sorted(points, key=lambda p: math.atan2(p[1] - cy, p[0] - cx))
         
-        # Apply Douglas-Peucker simplification
-        return self._douglas_peucker(sorted_points, tolerance)
+        return hull
     
     def _douglas_peucker(
         self,
