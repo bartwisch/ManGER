@@ -141,6 +141,62 @@ def save_api_key_to_env(api_key: str) -> None:
             logger.warning(f"Failed to save API key: {e}")
 
 
+def smooth_polygon_for_display(polygon: list[tuple[int, int]], num_points: int = 100) -> list[tuple[int, int]]:
+    """Smooth a polygon using Catmull-Rom spline interpolation for display.
+    
+    This creates a smooth curve through all polygon points, eliminating
+    harsh 90-degree corners that would break the speech bubble appearance.
+    
+    Args:
+        polygon: List of (x, y) points
+        num_points: Number of points in the smoothed output
+        
+    Returns:
+        Smoothed polygon with many more points for a curved appearance
+    """
+    if len(polygon) < 4:
+        return polygon
+    
+    import math
+    
+    # Close the polygon by wrapping points
+    pts = list(polygon) + [polygon[0], polygon[1], polygon[2]]
+    
+    result = []
+    n = len(polygon)
+    points_per_segment = max(3, num_points // n)
+    
+    for i in range(n):
+        # Four control points for Catmull-Rom
+        p0 = pts[i]
+        p1 = pts[i + 1]
+        p2 = pts[i + 2]
+        p3 = pts[i + 3]
+        
+        # Generate points along the spline segment
+        for j in range(points_per_segment):
+            t = j / points_per_segment
+            t2 = t * t
+            t3 = t2 * t
+            
+            # Catmull-Rom spline formula
+            x = 0.5 * (
+                (2 * p1[0]) +
+                (-p0[0] + p2[0]) * t +
+                (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+                (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3
+            )
+            y = 0.5 * (
+                (2 * p1[1]) +
+                (-p0[1] + p2[1]) * t +
+                (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+                (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3
+            )
+            result.append((int(x), int(y)))
+    
+    return result
+
+
 def group_text_blocks(blocks: list, distance_threshold: float = 0.05) -> list[list[int]]:
     """Group text blocks that are close together (likely in same speech bubble).
     
@@ -302,10 +358,13 @@ def draw_text_boxes(image: Image.Image, blocks: list, show_text: bool = True, sh
         for i, block in enumerate(blocks):
             polygon = renderer.extract_text_polygon(image, block.bbox)
             if len(polygon) >= 3:
-                # Draw polygon outline only (no fill) - thick orange line
-                for j in range(len(polygon)):
-                    p1 = polygon[j]
-                    p2 = polygon[(j + 1) % len(polygon)]
+                # Smooth the polygon to eliminate harsh corners
+                smoothed_polygon = smooth_polygon_for_display(polygon, num_points=150)
+                
+                # Draw smooth polygon outline - thick orange line
+                for j in range(len(smoothed_polygon)):
+                    p1 = smoothed_polygon[j]
+                    p2 = smoothed_polygon[(j + 1) % len(smoothed_polygon)]
                     # Draw thick line
                     draw.line([p1, p2], fill=(255, 165, 0), width=3)
     
@@ -855,6 +914,7 @@ def render_page_viewer():
                 st.success("✓ Rendering complete!")
                 if settings.get("play_sound", True):
                     play_notification_sound()
+                scroll_to_results()
                 st.rerun()
     
     # Display original and processed images side by side
@@ -934,6 +994,7 @@ def render_page_viewer():
                 st.success("✓ Rendering complete!")
                 if settings.get("play_sound", True):
                     play_notification_sound()
+                scroll_to_results()
                 st.rerun()
     
     st.divider()
@@ -1109,9 +1170,6 @@ def main():
     # Play any pending notification sound
     _render_pending_sound()
     
-    # Scroll to results if pending
-    _render_pending_scroll()
-    
     # Header
     st.title("📖 ManGER - Manga Translator")
     st.markdown(
@@ -1237,6 +1295,9 @@ def main():
         "[GitHub](https://github.com/example/manger) | "
         "Built with Streamlit"
     )
+    
+    # Scroll to results at the very end (after all content is rendered)
+    _render_pending_scroll()
 
 
 if __name__ == "__main__":

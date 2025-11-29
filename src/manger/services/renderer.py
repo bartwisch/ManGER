@@ -239,18 +239,27 @@ class Renderer:
         if bubble_mask is None or np.sum(bubble_mask) < 100:
             return None
         
-        # Extract boundary points from the mask
+        # Extract boundary points from the mask (already ordered by contour tracing)
         boundary_points = self._extract_boundary(bubble_mask)
         
         if len(boundary_points) < 10:
             return None
         
-        # Simplify the polygon to reduce points
-        simplified = self._simplify_polygon(boundary_points, tolerance=3.0)
+        # Validate/reorder the boundary points if needed
+        ordered_points = self._order_boundary_points(boundary_points)
         
-        # Smooth the polygon aggressively to round off sharp corners
-        # More iterations = rounder corners
-        smoothed = self._smooth_polygon(simplified, iterations=10)
+        # Simplify the polygon to reduce points while preserving curves
+        # Very low tolerance = many points = very smooth curves
+        simplified = self._simplify_polygon(ordered_points, tolerance=1.0)
+        
+        # Ensure we have enough points for smooth curves (at least 20)
+        if len(simplified) < 20 and len(ordered_points) >= 20:
+            # Use less simplification
+            simplified = self._simplify_polygon(ordered_points, tolerance=0.5)
+        
+        # Smooth the polygon very aggressively to round off ALL corners
+        # This is critical to avoid 90-degree angles
+        smoothed = self._smooth_polygon(simplified, iterations=15)
         
         # Shrink polygon inward to create buffer from bubble outline
         # Use percentage-based shrinking for better scaling across different bubble sizes
@@ -524,30 +533,70 @@ class Renderer:
         return mask
     
     def _extract_boundary(self, mask: np.ndarray) -> list[tuple[int, int]]:
-        """Extract boundary points from a binary mask.
+        """Extract boundary points from a binary mask using contour tracing.
+        
+        Uses Moore-Neighbor tracing algorithm to get properly ordered boundary points.
         
         Returns:
-            List of (x, y) boundary points
+            List of (x, y) boundary points in order along the contour
         """
         h, w = mask.shape
-        boundary = []
         
+        # Find starting point (first white pixel from top-left)
+        start = None
         for y in range(h):
             for x in range(w):
                 if mask[y, x] > 0:
-                    # Check if this is a boundary pixel
-                    is_boundary = False
-                    for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                        ny, nx = y + dy, x + dx
-                        if ny < 0 or ny >= h or nx < 0 or nx >= w:
-                            is_boundary = True
-                            break
-                        if mask[ny, nx] == 0:
-                            is_boundary = True
-                            break
+                    start = (x, y)
+                    break
+            if start:
+                break
+        
+        if not start:
+            return []
+        
+        # Moore-Neighbor tracing
+        # Direction: 0=right, 1=down-right, 2=down, 3=down-left, 4=left, 5=up-left, 6=up, 7=up-right
+        directions = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
+        
+        boundary = [start]
+        current = start
+        # Start by looking in the direction we came from (left, since we scanned left-to-right)
+        direction = 4  # Start looking left
+        
+        max_iterations = w * h * 2  # Safety limit
+        iterations = 0
+        
+        while iterations < max_iterations:
+            iterations += 1
+            
+            # Look for next boundary pixel, starting from backtrack direction + 1
+            found = False
+            start_dir = (direction + 5) % 8  # Backtrack and turn right
+            
+            for i in range(8):
+                check_dir = (start_dir + i) % 8
+                dx, dy = directions[check_dir]
+                nx, ny = current[0] + dx, current[1] + dy
+                
+                if 0 <= nx < w and 0 <= ny < h and mask[ny, nx] > 0:
+                    if (nx, ny) == start and len(boundary) > 2:
+                        # We've completed the loop
+                        return boundary
                     
-                    if is_boundary:
-                        boundary.append((x, y))
+                    if (nx, ny) not in boundary[-10:]:  # Avoid immediate backtracking
+                        current = (nx, ny)
+                        boundary.append(current)
+                        direction = check_dir
+                        found = True
+                        break
+            
+            if not found:
+                break
+            
+            # Safety: if boundary is too long, we're probably stuck
+            if len(boundary) > w * h // 2:
+                break
         
         return boundary
     
@@ -557,22 +606,36 @@ class Renderer:
     ) -> list[tuple[int, int]]:
         """Order boundary points to form a proper closed contour.
         
-        Uses nearest-neighbor approach to trace the boundary.
+        Since _extract_boundary now returns ordered points, this just validates and returns them.
+        Falls back to angle-based sorting if points seem unordered.
         """
         if len(points) < 3:
             return points
         
-        # Start from the topmost-leftmost point
-        points = list(points)
-        ordered = [min(points, key=lambda p: (p[1], p[0]))]
-        points.remove(ordered[0])
+        # Check if points are already roughly ordered by checking total path length
+        # vs convex hull perimeter - if path is much longer, points are probably unordered
+        import math
         
-        while points:
-            current = ordered[-1]
-            # Find nearest unvisited point
-            nearest = min(points, key=lambda p: (p[0]-current[0])**2 + (p[1]-current[1])**2)
-            ordered.append(nearest)
-            points.remove(nearest)
+        # Calculate path length
+        path_length = 0
+        for i in range(len(points)):
+            p1 = points[i]
+            p2 = points[(i + 1) % len(points)]
+            path_length += math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
+        
+        # Calculate centroid and sort by angle as fallback
+        cx = sum(p[0] for p in points) / len(points)
+        cy = sum(p[1] for p in points) / len(points)
+        
+        # Estimate expected perimeter (approximate circle with same area)
+        area = len(points)  # Rough area estimate
+        expected_perimeter = 2 * math.sqrt(math.pi * area)
+        
+        # If path is more than 3x expected, points are probably unordered
+        if path_length > expected_perimeter * 3:
+            return sorted(points, key=lambda p: math.atan2(p[1] - cy, p[0] - cx))
+        
+        return list(points)
         
         return ordered
     
@@ -581,10 +644,14 @@ class Renderer:
         points: list[tuple[int, int]],
         tolerance: float = 2.0
     ) -> list[tuple[int, int]]:
-        """Simplify a polygon using convex hull for cleaner shape.
+        """Simplify a polygon while preserving its shape.
+        
+        Uses Douglas-Peucker algorithm to reduce points while maintaining
+        the original curved shape. Does NOT use convex hull to avoid
+        creating sharp corners on round speech bubbles.
         
         Args:
-            points: List of polygon points
+            points: List of polygon points (should already be ordered along contour)
             tolerance: Distance tolerance for simplification
             
         Returns:
@@ -593,17 +660,23 @@ class Renderer:
         if len(points) < 3:
             return points
         
-        # Use convex hull for a clean, simple polygon
-        hull = self._convex_hull(points)
+        # Points should already be in order along the boundary contour
+        # Don't re-sort by angle as that can create crossing lines
         
-        if len(hull) < 3:
-            # Fallback: sort by angle
-            cx = sum(p[0] for p in points) / len(points)
-            cy = sum(p[1] for p in points) / len(points)
-            import math
-            return sorted(points, key=lambda p: math.atan2(p[1] - cy, p[0] - cx))
+        # Use Douglas-Peucker to simplify while preserving curves
+        # Close the polygon for proper simplification
+        closed = list(points) + [points[0]]
+        simplified = self._douglas_peucker(closed, tolerance)
         
-        return hull
+        # Remove the duplicate closing point if present
+        if len(simplified) > 1 and simplified[0] == simplified[-1]:
+            simplified = simplified[:-1]
+        
+        # Ensure we have enough points for a valid polygon
+        if len(simplified) < 3:
+            return list(points)
+        
+        return simplified
     
     def _douglas_peucker(
         self,
@@ -905,7 +978,10 @@ class Renderer:
     def _sample_background_color(
         self, image: Image.Image, x1: int, y1: int, x2: int, y2: int
     ) -> tuple[int, int, int]:
-        """Sample the background color from the edges of a region.
+        """Sample the background color from a region, preferring light colors.
+        
+        For speech bubbles, the background is typically white or very light,
+        so we sample multiple areas and use the brightest pixels.
         
         Args:
             image: Source image
@@ -915,25 +991,53 @@ class Renderer:
             RGB color tuple
         """
         try:
-            # Sample pixels from the border
             samples = []
             
-            # Top edge
-            for x in range(x1, min(x2, x1 + 10)):
-                if 0 <= y1 < image.height and 0 <= x < image.width:
-                    samples.append(image.getpixel((x, y1)))
+            # Sample from multiple edges and corners (avoiding text in the middle)
+            # Top edge - sample from middle of edge
+            mid_x = (x1 + x2) // 2
+            mid_y = (y1 + y2) // 2
             
-            # Left edge
-            for y in range(y1, min(y2, y1 + 10)):
-                if 0 <= y < image.height and 0 <= x1 < image.width:
-                    samples.append(image.getpixel((x1, y)))
+            # Sample corners (where text is less likely)
+            sample_points = [
+                (x1, y1),  # Top-left corner
+                (x2 - 1, y1),  # Top-right corner
+                (x1, y2 - 1),  # Bottom-left corner
+                (x2 - 1, y2 - 1),  # Bottom-right corner
+                (x1, mid_y),  # Left edge middle
+                (x2 - 1, mid_y),  # Right edge middle
+                (mid_x, y1),  # Top edge middle
+                (mid_x, y2 - 1),  # Bottom edge middle
+            ]
+            
+            for px, py in sample_points:
+                if 0 <= px < image.width and 0 <= py < image.height:
+                    pixel = image.getpixel((px, py))
+                    if isinstance(pixel, tuple):
+                        samples.append(pixel[:3])
+                    else:
+                        samples.append((pixel, pixel, pixel))
             
             if samples:
-                # Average the samples
-                r = sum(s[0] if isinstance(s, tuple) else s for s in samples) // len(samples)
-                g = sum(s[1] if isinstance(s, tuple) and len(s) > 1 else r for s in samples) // len(samples)
-                b = sum(s[2] if isinstance(s, tuple) and len(s) > 2 else r for s in samples) // len(samples)
-                return (r, g, b)
+                # For speech bubbles, the background should be the BRIGHTEST color
+                # Sort by brightness (sum of RGB) and take the brightest ones
+                samples_with_brightness = [(s, sum(s)) for s in samples]
+                samples_with_brightness.sort(key=lambda x: x[1], reverse=True)
+                
+                # Take the top 3 brightest samples and average them
+                brightest = [s[0] for s in samples_with_brightness[:3]]
+                if brightest:
+                    r = sum(s[0] for s in brightest) // len(brightest)
+                    g = sum(s[1] for s in brightest) // len(brightest)
+                    b = sum(s[2] for s in brightest) // len(brightest)
+                    
+                    # If very bright (>240 average), assume it's white
+                    avg = (r + g + b) // 3
+                    if avg > 240:
+                        return (255, 255, 255)
+                    
+                    return (r, g, b)
+                    
         except Exception as e:
             logger.debug(f"Failed to sample background: {e}")
         
