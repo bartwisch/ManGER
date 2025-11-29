@@ -938,24 +938,24 @@ def render_page_selector():
     
     st.write(f"**Selected:** {len(st.session_state.selected_pages)} of {page_count} pages")
     
-    # Start button for all selected pages
-    if st.session_state.selected_pages:
-        settings = st.session_state.get("_current_settings", {})
-        provider = settings.get("provider", "openai")
-        api_key = settings.get("api_key", "")
-        needs_api_key = provider == "openai" and not api_key
-        
-        if st.button(
-            f"▶️ Start All Selected Pages ({len(st.session_state.selected_pages)} pages)",
-            key="start_all_selected",
-            type="primary",
-            use_container_width=True,
-            disabled=needs_api_key,
-        ):
-            _process_all_selected_pages(settings)
-        
-        if needs_api_key:
-            st.caption("⚠️ Enter OpenAI API key in sidebar or use 'dummy' provider")
+    # Start button for all selected pages - always visible
+    settings = st.session_state.get("_current_settings", {})
+    provider = settings.get("provider", "openai")
+    api_key = settings.get("api_key", "")
+    needs_api_key = provider == "openai" and not api_key
+    no_pages_selected = len(st.session_state.selected_pages) == 0
+    
+    if st.button(
+        f"▶️ Start All Selected Pages ({len(st.session_state.selected_pages)} pages)" if st.session_state.selected_pages else "▶️ Start (select pages first)",
+        key="start_all_selected",
+        type="primary",
+        use_container_width=True,
+        disabled=needs_api_key or no_pages_selected,
+    ):
+        _process_all_selected_pages(settings)
+    
+    if needs_api_key:
+        st.caption("⚠️ Enter OpenAI API key in sidebar or use 'dummy' provider")
     
     # Show download dialog after processing is complete
     if st.session_state.get("show_download_dialog", False):
@@ -1413,6 +1413,9 @@ def main():
                 page_count = st.session_state.pdf_service.load_from_bytes(pdf_bytes)
                 st.session_state.pdf_loaded = True
                 st.session_state.pdf_page_count = page_count
+                
+                # Select all pages by default
+                st.session_state.selected_pages = list(range(page_count))
                 
                 # Generate thumbnails
                 with st.spinner("Generating page previews..."):
