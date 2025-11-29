@@ -6,6 +6,7 @@ all coordinates are normalized immediately upon detection.
 
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
+from collections import Counter
 import random
 
 from loguru import logger
@@ -148,6 +149,94 @@ class BaseOCRService(ABC):
             Normalized BoundingBox
         """
         return BoundingBox.from_pixels(x_min, y_min, x_max, y_max, width, height)
+
+    def _extract_text_color(
+        self,
+        image: Image.Image,
+        x_min: int,
+        y_min: int,
+        x_max: int,
+        y_max: int,
+    ) -> tuple[int, int, int] | None:
+        """Extract the dominant text color from a region.
+        
+        Analyzes the region to find the most common non-background color,
+        which is typically the text color.
+        
+        Args:
+            image: Source image
+            x_min, y_min, x_max, y_max: Pixel coordinates
+            
+        Returns:
+            RGB tuple of the detected text color, or None if unable to detect
+        """
+        try:
+            # Ensure valid crop coordinates
+            x_min = max(0, x_min)
+            y_min = max(0, y_min)
+            x_max = min(image.width, x_max)
+            y_max = min(image.height, y_max)
+            
+            if x_max <= x_min or y_max <= y_min:
+                return None
+            
+            # Crop the text region
+            region = image.crop((x_min, y_min, x_max, y_max))
+            
+            # Convert to RGB if necessary
+            if region.mode != "RGB":
+                region = region.convert("RGB")
+            
+            # Get all pixels
+            pixels = list(region.getdata())
+            
+            if not pixels:
+                return None
+            
+            # Group colors by similarity (to handle anti-aliasing)
+            def quantize_color(rgb: tuple[int, int, int], step: int = 32) -> tuple[int, int, int]:
+                return (
+                    (rgb[0] // step) * step,
+                    (rgb[1] // step) * step,
+                    (rgb[2] // step) * step,
+                )
+            
+            # Count quantized colors
+            color_counts = Counter(quantize_color(p) for p in pixels)
+            
+            # Calculate brightness
+            def brightness(rgb: tuple[int, int, int]) -> float:
+                return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+            
+            # White/light colors are likely background
+            def is_background(rgb: tuple[int, int, int]) -> bool:
+                return brightness(rgb) > 200
+            
+            # Filter out background colors
+            text_colors = [
+                (color, count) 
+                for color, count in color_counts.items() 
+                if not is_background(color)
+            ]
+            
+            if not text_colors:
+                return None
+            
+            # Sort by count (most common first)
+            text_colors.sort(key=lambda x: x[1], reverse=True)
+            
+            # Take the most common non-background color
+            dominant_color = text_colors[0][0]
+            
+            # Boost color slightly (quantization may have dulled it)
+            boosted = tuple(min(255, c + 16) for c in dominant_color)
+            
+            logger.debug(f"Detected text color: {boosted}")
+            return boosted
+            
+        except Exception as e:
+            logger.warning(f"Failed to extract text color: {e}")
+            return None
 
 
 class DummyOCRService(BaseOCRService):
@@ -294,6 +383,110 @@ class MagiOCRService(BaseOCRService):
         except Exception as e:
             raise OCRModelLoadError(f"Failed to load Magi model: {e}") from e
     
+    def _normalize_aspect_ratio(self, image: Image.Image) -> tuple[Image.Image, dict]:
+        """Normalize image aspect ratio for better OCR on extreme formats.
+        
+        Very narrow or very wide images can cause issues with Magi's detection.
+        This pads the image to a more reasonable aspect ratio (max 2:1 or 1:2).
+        
+        Args:
+            image: Original PIL Image
+            
+        Returns:
+            Tuple of (normalized image, transform info for coordinate adjustment)
+        """
+        width, height = image.size
+        aspect = width / height
+        
+        # Only normalize if aspect ratio is extreme (< 0.5 or > 2.0)
+        if 0.5 <= aspect <= 2.0:
+            return image, {"normalized": False}
+        
+        import cv2
+        import numpy as np
+        
+        img_array = np.array(image)
+        
+        if aspect < 0.5:
+            # Very tall/narrow image - pad width to make it 1:2
+            target_width = height // 2
+            pad_total = target_width - width
+            pad_left = pad_total // 2
+            pad_right = pad_total - pad_left
+            
+            # Pad with white (common manga background)
+            padded = cv2.copyMakeBorder(
+                img_array, 0, 0, pad_left, pad_right,
+                cv2.BORDER_CONSTANT, value=(255, 255, 255)
+            )
+            
+            logger.debug(f"Normalized narrow image: {width}x{height} -> {padded.shape[1]}x{padded.shape[0]} (padded {pad_left}+{pad_right}px width)")
+            
+            return Image.fromarray(padded), {
+                "normalized": True,
+                "original_size": (width, height),
+                "pad_left": pad_left,
+                "pad_right": pad_right,
+                "pad_top": 0,
+                "pad_bottom": 0,
+            }
+            
+        else:
+            # Very wide image - pad height to make it 2:1
+            target_height = width // 2
+            pad_total = target_height - height
+            pad_top = pad_total // 2
+            pad_bottom = pad_total - pad_top
+            
+            padded = cv2.copyMakeBorder(
+                img_array, pad_top, pad_bottom, 0, 0,
+                cv2.BORDER_CONSTANT, value=(255, 255, 255)
+            )
+            
+            logger.debug(f"Normalized wide image: {width}x{height} -> {padded.shape[1]}x{padded.shape[0]} (padded {pad_top}+{pad_bottom}px height)")
+            
+            return Image.fromarray(padded), {
+                "normalized": True,
+                "original_size": (width, height),
+                "pad_left": 0,
+                "pad_right": 0,
+                "pad_top": pad_top,
+                "pad_bottom": pad_bottom,
+            }
+    
+    def _adjust_bbox_for_normalization(self, bbox: list, transform: dict, normalized_size: tuple) -> list:
+        """Adjust bounding box coordinates back to original image coordinates.
+        
+        Args:
+            bbox: Bounding box [x_min, y_min, x_max, y_max] in normalized image coordinates
+            transform: Transform info from _normalize_aspect_ratio
+            normalized_size: Size of the normalized image (width, height)
+            
+        Returns:
+            Adjusted bounding box in original image coordinates
+        """
+        if not transform.get("normalized", False):
+            return bbox
+        
+        x_min, y_min, x_max, y_max = bbox[:4]
+        pad_left = transform["pad_left"]
+        pad_top = transform["pad_top"]
+        orig_width, orig_height = transform["original_size"]
+        
+        # Subtract padding offset
+        x_min = x_min - pad_left
+        x_max = x_max - pad_left
+        y_min = y_min - pad_top
+        y_max = y_max - pad_top
+        
+        # Clamp to original image bounds
+        x_min = max(0, min(x_min, orig_width))
+        x_max = max(0, min(x_max, orig_width))
+        y_min = max(0, min(y_min, orig_height))
+        y_max = max(0, min(y_max, orig_height))
+        
+        return [x_min, y_min, x_max, y_max]
+    
     def _prepare_image(self, image: Image.Image, scale_factor: int = 2) -> tuple[np.ndarray, int]:
         """Convert PIL Image to format expected by Magi with preprocessing.
         
@@ -420,10 +613,20 @@ class MagiOCRService(BaseOCRService):
         if self._model is None:
             raise OCRProcessingError("Model not loaded. Call load_model() first.")
         
-        width, height = image.size
-        np_image, scale_factor = self._prepare_image(image, scale_factor=2)
+        # Store original dimensions
+        orig_width, orig_height = image.size
         
-        logger.debug(f"Running Magi detection on image {width}x{height} (scaled {scale_factor}x)")
+        # Normalize aspect ratio for extreme formats (very narrow/wide images)
+        normalized_image, aspect_transform = self._normalize_aspect_ratio(image)
+        norm_width, norm_height = normalized_image.size
+        
+        # Prepare for Magi
+        np_image, scale_factor = self._prepare_image(normalized_image, scale_factor=2)
+        
+        if aspect_transform.get("normalized"):
+            logger.debug(f"Running Magi detection on normalized image {norm_width}x{norm_height} (original: {orig_width}x{orig_height}, scaled {scale_factor}x)")
+        else:
+            logger.debug(f"Running Magi detection on image {orig_width}x{orig_height} (scaled {scale_factor}x)")
         
         try:
             with torch.no_grad():
@@ -474,18 +677,28 @@ class MagiOCRService(BaseOCRService):
             
             # Check if coordinates are already normalized (0-1 range)
             if all(0 <= coord <= 1 for coord in bbox[:4]):
-                # Already normalized - scale factor doesn't apply
+                # Already normalized - convert to pixel coords in normalized image
                 x_min, y_min, x_max, y_max = bbox[:4]
-                x_min_px = int(x_min * width)
-                y_min_px = int(y_min * height)
-                x_max_px = int(x_max * width)
-                y_max_px = int(y_max * height)
+                x_min_px = int(x_min * norm_width)
+                y_min_px = int(y_min * norm_height)
+                x_max_px = int(x_max * norm_width)
+                y_max_px = int(y_max * norm_height)
             else:
-                # Pixel coordinates - need to scale back to original size
+                # Pixel coordinates - need to scale back from Magi's scaled size
                 x_min_px = int(bbox[0] / scale_factor)
                 y_min_px = int(bbox[1] / scale_factor)
                 x_max_px = int(bbox[2] / scale_factor)
                 y_max_px = int(bbox[3] / scale_factor)
+            
+            # Adjust coordinates back to original image if aspect ratio was normalized
+            if aspect_transform.get("normalized"):
+                adjusted = self._adjust_bbox_for_normalization(
+                    [x_min_px, y_min_px, x_max_px, y_max_px],
+                    aspect_transform,
+                    (norm_width, norm_height)
+                )
+                x_min_px, y_min_px, x_max_px, y_max_px = [int(c) for c in adjusted]
+                logger.debug(f"Adjusted bbox {i} for aspect normalization: [{x_min_px}, {y_min_px}, {x_max_px}, {y_max_px}]")
             
             # Apply minimal padding - just enough to not cut off text
             # Keep it tight so polygon detection works better
@@ -497,8 +710,8 @@ class MagiOCRService(BaseOCRService):
             
             x_min_px = max(0, x_min_px - padding_left)
             y_min_px = max(0, y_min_px - padding_y)
-            x_max_px = min(width, x_max_px + padding_right)
-            y_max_px = min(height, y_max_px + padding_y)
+            x_max_px = min(orig_width, x_max_px + padding_right)
+            y_max_px = min(orig_height, y_max_px + padding_y)
             
             # Get OCR text (if available)
             text = ocr_texts[i] if i < len(ocr_texts) else ""
@@ -515,15 +728,21 @@ class MagiOCRService(BaseOCRService):
             # Check if this is essential text (dialogue vs. SFX)
             essential = is_essential[i] if i < len(is_essential) else True
             
+            # Extract text color from original image
+            text_color = self._extract_text_color(
+                image, x_min_px, y_min_px, x_max_px, y_max_px
+            )
+            
             block = TextBlock(
                 bbox=self._normalize_coordinates(
                     x_min_px, y_min_px, x_max_px, y_max_px,
-                    width, height
+                    orig_width, orig_height
                 ),
                 original_text=text,
                 confidence=0.9,  # Magi doesn't provide per-box confidence
                 is_vertical=is_vertical,
                 speaker_id=speaker_id,
+                text_color=text_color,
                 raw_ocr_result={
                     "source": "magi",
                     "index": i,

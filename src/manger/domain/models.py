@@ -107,6 +107,9 @@ class TextBlock(BaseModel):
     is_vertical: bool = Field(
         default=False, description="Whether text is vertical (common in manga)"
     )
+    text_color: tuple[int, int, int] | None = Field(
+        default=None, description="Detected text color as RGB tuple"
+    )
     
     # Traceability fields
     raw_ocr_result: dict | None = Field(

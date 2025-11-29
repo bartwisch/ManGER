@@ -18,6 +18,7 @@ import numpy as np
 
 from manger.config import RenderConfig, get_config
 from manger.domain.models import BoundingBox, MangaPage, TextBlock
+from collections import Counter
 
 if TYPE_CHECKING:
     pass
@@ -83,6 +84,92 @@ class Renderer:
         except Exception as e:
             logger.warning(f"Failed to load font: {e}, using default")
             return ImageFont.load_default()
+    
+    def _extract_text_color(
+        self,
+        image: Image.Image,
+        bbox: BoundingBox,
+    ) -> tuple[int, int, int]:
+        """Extract the dominant text color from a region.
+        
+        Analyzes the region to find the most common non-background color,
+        which is typically the text color.
+        
+        Args:
+            image: Source image
+            bbox: Bounding box of the text region
+            
+        Returns:
+            RGB tuple of the detected text color
+        """
+        width, height = image.size
+        x1, y1, x2, y2 = bbox.to_pixels(width, height)
+        
+        # Crop the text region
+        region = image.crop((x1, y1, x2, y2))
+        
+        # Convert to RGB if necessary
+        if region.mode != "RGB":
+            region = region.convert("RGB")
+        
+        # Get all pixels
+        pixels = list(region.getdata())
+        
+        if not pixels:
+            return self.config.text_color
+        
+        # Group colors by similarity (to handle anti-aliasing)
+        # We'll quantize colors to reduce noise
+        def quantize_color(rgb: tuple[int, int, int], step: int = 32) -> tuple[int, int, int]:
+            return (
+                (rgb[0] // step) * step,
+                (rgb[1] // step) * step,
+                (rgb[2] // step) * step,
+            )
+        
+        # Count quantized colors
+        color_counts = Counter(quantize_color(p) for p in pixels)
+        
+        # Calculate brightness for each color
+        def brightness(rgb: tuple[int, int, int]) -> float:
+            return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+        
+        # Find the darkest non-white color (likely text)
+        # Also consider saturation for colored text
+        def is_background(rgb: tuple[int, int, int]) -> bool:
+            # White or near-white is background
+            return brightness(rgb) > 200
+        
+        def color_saturation(rgb: tuple[int, int, int]) -> float:
+            max_c = max(rgb)
+            min_c = min(rgb)
+            if max_c == 0:
+                return 0
+            return (max_c - min_c) / max_c
+        
+        # Filter out background colors and find the most common text color
+        text_colors = [
+            (color, count) 
+            for color, count in color_counts.items() 
+            if not is_background(color)
+        ]
+        
+        if not text_colors:
+            # All colors are background-like, use config default
+            return self.config.text_color
+        
+        # Sort by count (most common first)
+        text_colors.sort(key=lambda x: x[1], reverse=True)
+        
+        # Take the most common non-background color
+        dominant_color = text_colors[0][0]
+        
+        # Boost the color slightly for better visibility
+        # (quantization may have dulled it)
+        boosted = tuple(min(255, c + 16) for c in dominant_color)
+        
+        logger.debug(f"Detected text color: {boosted}")
+        return boosted
     
     def inpaint(
         self, 
@@ -1122,11 +1209,14 @@ class Renderer:
             text_x = inner_x1 + (inner_width - text_width) // 2
             text_y = inner_y1 + (inner_height - text_height) // 2
             
+            # Use detected text color if available, otherwise use config default
+            text_color = block.text_color if block.text_color else self.config.text_color
+            
             # Draw text
             draw.text(
                 (text_x, text_y),
                 wrapped_text,
-                fill=self.config.text_color,
+                fill=text_color,
                 font=font,
             )
         
