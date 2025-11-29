@@ -451,6 +451,85 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# CSS for uniform thumbnail grid
+st.markdown("""
+<style>
+/* Thumbnail grid container */
+.thumbnail-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 10px;
+    padding: 10px 0;
+}
+
+/* Each thumbnail cell */
+.thumbnail-cell {
+    aspect-ratio: 0.7;  /* Manga pages are typically taller than wide */
+    overflow: hidden;
+    border-radius: 4px;
+    background: #1e1e1e;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.thumbnail-cell img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
+
+/* Make streamlit image containers uniform in the sidebar/thumbnail area */
+[data-testid="stImage"] {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* Uniform height for thumbnail columns */
+.stColumn [data-testid="stVerticalBlock"] {
+    min-height: 180px;
+    align-items: center;
+}
+
+/* Center checkbox in thumbnail grid */
+[data-testid="stHorizontalBlock"] > [data-testid="column"] {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+[data-testid="stHorizontalBlock"] > [data-testid="column"] > [data-testid="stVerticalBlockBorderWrapper"] {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+[data-testid="stCheckbox"] {
+    width: auto !important;
+}
+
+/* Thumbnail image specific styling */
+.thumbnail-container {
+    height: 150px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background: #2d2d2d;
+    border-radius: 4px;
+    margin-bottom: 5px;
+}
+
+.thumbnail-container img {
+    max-height: 100%;
+    max-width: 100%;
+    object-fit: contain;
+}
+</style>
+""", unsafe_allow_html=True)
+
 
 def init_session_state():
     """Initialize session state variables."""
@@ -804,12 +883,31 @@ def render_page_selector():
                 with cols[col_idx]:
                     is_selected = page_num in st.session_state.selected_pages
                     
-                    # Show thumbnail
-                    st.image(thumb, use_container_width=True)
+                    # Show thumbnail in uniform container
+                    # Resize thumbnail to uniform size while maintaining aspect ratio
+                    thumb_display = thumb.copy()
+                    target_height = 150
+                    aspect = thumb_display.width / thumb_display.height
+                    target_width = int(target_height * aspect)
+                    thumb_display = thumb_display.resize((target_width, target_height), Image.Resampling.LANCZOS)
+                    
+                    # Create uniform canvas
+                    canvas = Image.new('RGB', (120, 150), (45, 45, 45))
+                    # Center the thumbnail on canvas
+                    x_offset = (120 - thumb_display.width) // 2
+                    y_offset = (150 - thumb_display.height) // 2
+                    # Paste (handling if thumbnail is wider than canvas)
+                    if thumb_display.width > 120:
+                        thumb_display = thumb_display.resize((120, int(120 / aspect)), Image.Resampling.LANCZOS)
+                        y_offset = (150 - thumb_display.height) // 2
+                        x_offset = 0
+                    canvas.paste(thumb_display, (max(0, x_offset), max(0, y_offset)))
+                    
+                    st.image(canvas, use_container_width=True)
                     
                     # Checkbox for selection
                     new_value = st.checkbox(
-                        f"Page {page_num + 1}",
+                        f"{page_num + 1}",
                         value=is_selected,
                         key=f"page_select_{page_num}",
                     )
