@@ -812,14 +812,13 @@ def _process_all_selected_pages(settings: dict):
 @st.dialog("📥 Download Translated PDF")
 def _show_download_dialog():
     """Show a dialog to download the translated PDF."""
-    selected_pages = st.session_state.selected_pages
-    
-    # Collect all result images
+    # Collect all result images from pages_data (not relying on selected_pages)
     result_images = []
-    for page_num in selected_pages:
-        page_data = st.session_state.pages_data.get(page_num)
+    processed_pages = []
+    for page_num, page_data in sorted(st.session_state.pages_data.items()):
         if page_data and page_data.get("result"):
             result_images.append(page_data["result"])
+            processed_pages.append(page_num)
     
     if not result_images:
         st.error("No translated pages available!")
@@ -846,10 +845,10 @@ def _show_download_dialog():
     # Remove .pdf extension
     base_name = original_name.rsplit(".", 1)[0] if "." in original_name else original_name
     
-    # Get page range
-    if selected_pages:
-        min_page = min(selected_pages) + 1  # 1-indexed for display
-        max_page = max(selected_pages) + 1
+    # Get page range from processed pages
+    if processed_pages:
+        min_page = min(processed_pages) + 1  # 1-indexed for display
+        max_page = max(processed_pages) + 1
         if min_page == max_page:
             page_range = f"{min_page}"
         else:
@@ -917,23 +916,46 @@ def render_page_selector():
     
     page_count = st.session_state.pdf_page_count
     
+    # Sync selected_pages from checkbox states at the start (for accurate count display)
+    # Only sync if checkbox states exist (i.e., thumbnails have been rendered before)
+    first_checkbox_key = "page_select_0"
+    if first_checkbox_key in st.session_state:
+        new_selected = []
+        for page_num in range(page_count):
+            checkbox_key = f"page_select_{page_num}"
+            if st.session_state.get(checkbox_key, False):
+                new_selected.append(page_num)
+        st.session_state.selected_pages = new_selected
+    
     # Quick selection buttons
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         if st.button("Select All", use_container_width=True):
             st.session_state.selected_pages = list(range(page_count))
+            # Update checkbox states
+            for i in range(page_count):
+                st.session_state[f"page_select_{i}"] = True
             st.rerun()
     with col2:
         if st.button("Clear Selection", use_container_width=True):
             st.session_state.selected_pages = []
+            # Update checkbox states
+            for i in range(page_count):
+                st.session_state[f"page_select_{i}"] = False
             st.rerun()
     with col3:
         if st.button("Select Odd Pages", use_container_width=True):
             st.session_state.selected_pages = list(range(0, page_count, 2))
+            # Update checkbox states
+            for i in range(page_count):
+                st.session_state[f"page_select_{i}"] = (i % 2 == 0)
             st.rerun()
     with col4:
         if st.button("Select Even Pages", use_container_width=True):
             st.session_state.selected_pages = list(range(1, page_count, 2))
+            # Update checkbox states
+            for i in range(page_count):
+                st.session_state[f"page_select_{i}"] = (i % 2 == 1)
             st.rerun()
     
     st.write(f"**Selected:** {len(st.session_state.selected_pages)} of {page_count} pages")
@@ -971,8 +993,6 @@ def render_page_selector():
                 thumbnails[row_start:row_start + cols_per_row]
             ):
                 with cols[col_idx]:
-                    is_selected = page_num in st.session_state.selected_pages
-                    
                     # Show thumbnail in uniform container
                     # Resize thumbnail to uniform size while maintaining aspect ratio
                     thumb_display = thumb.copy()
@@ -995,19 +1015,17 @@ def render_page_selector():
                     
                     st.image(canvas, use_container_width=True)
                     
-                    # Checkbox for selection
-                    new_value = st.checkbox(
+                    # Checkbox for selection - use callback to update selected_pages
+                    checkbox_key = f"page_select_{page_num}"
+                    
+                    # Initialize checkbox state if not exists
+                    if checkbox_key not in st.session_state:
+                        st.session_state[checkbox_key] = page_num in st.session_state.selected_pages
+                    
+                    st.checkbox(
                         f"{page_num + 1}",
-                        value=is_selected,
-                        key=f"page_select_{page_num}",
+                        key=checkbox_key,
                     )
-                    if new_value and page_num not in st.session_state.selected_pages:
-                        st.session_state.selected_pages.append(page_num)
-                        st.session_state.selected_pages.sort()
-                        st.rerun()
-                    elif not new_value and page_num in st.session_state.selected_pages:
-                        st.session_state.selected_pages.remove(page_num)
-                        st.rerun()
 
 
 def render_page_viewer():
@@ -1416,6 +1434,9 @@ def main():
                 
                 # Select all pages by default
                 st.session_state.selected_pages = list(range(page_count))
+                # Set all checkbox states to True
+                for i in range(page_count):
+                    st.session_state[f"page_select_{i}"] = True
                 
                 # Generate thumbnails
                 with st.spinner("Generating page previews..."):
