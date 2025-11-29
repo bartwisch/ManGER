@@ -555,6 +555,8 @@ def init_session_state():
         st.session_state.show_download_dialog = False
     if "pdf_bytes" not in st.session_state:
         st.session_state.pdf_bytes = None
+    if "original_filename" not in st.session_state:
+        st.session_state.original_filename = "manga.pdf"
 
 
 def get_pipeline(settings: dict | None = None) -> MangaPipeline:
@@ -839,8 +841,23 @@ def _show_download_dialog():
             st.rerun()
         return
     
-    # File name input
-    default_name = "translated_manga.pdf"
+    # Generate default filename: original_name + page_range + GER
+    original_name = st.session_state.get("original_filename", "manga.pdf")
+    # Remove .pdf extension
+    base_name = original_name.rsplit(".", 1)[0] if "." in original_name else original_name
+    
+    # Get page range
+    if selected_pages:
+        min_page = min(selected_pages) + 1  # 1-indexed for display
+        max_page = max(selected_pages) + 1
+        if min_page == max_page:
+            page_range = f"{min_page}"
+        else:
+            page_range = f"{min_page}-{max_page}"
+    else:
+        page_range = "all"
+    
+    default_name = f"{base_name} {page_range} GER.pdf"
     file_name = st.text_input("File name:", value=default_name)
     
     if not file_name.endswith(".pdf"):
@@ -1388,6 +1405,9 @@ def main():
     if uploaded_file and not st.session_state.pdf_loaded:
         with st.spinner("Loading PDF..."):
             try:
+                # Store original filename
+                st.session_state.original_filename = uploaded_file.name
+                
                 # Read the file bytes
                 pdf_bytes = uploaded_file.read()
                 page_count = st.session_state.pdf_service.load_from_bytes(pdf_bytes)

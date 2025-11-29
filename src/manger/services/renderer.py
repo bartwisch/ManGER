@@ -1201,23 +1201,25 @@ class Renderer:
                 text, inner_width, inner_height, block.is_vertical
             )
             
-            # Calculate text position (centered in the text area)
-            text_bbox = draw.textbbox((0, 0), wrapped_text, font=font)
+            # Calculate text dimensions for centering
+            text_bbox = draw.multiline_textbbox((0, 0), wrapped_text, font=font, align="center")
             text_width = text_bbox[2] - text_bbox[0]
             text_height = text_bbox[3] - text_bbox[1]
             
+            # Center horizontally and vertically
             text_x = inner_x1 + (inner_width - text_width) // 2
             text_y = inner_y1 + (inner_height - text_height) // 2
             
             # Use detected text color if available, otherwise use config default
             text_color = block.text_color if block.text_color else self.config.text_color
             
-            # Draw text
-            draw.text(
+            # Draw text - centered alignment for multi-line text
+            draw.multiline_text(
                 (text_x, text_y),
                 wrapped_text,
                 fill=text_color,
                 font=font,
+                align="center",  # center each line
             )
         
         logger.debug(f"Typeset {len(blocks)} text blocks")
@@ -1286,7 +1288,7 @@ class Renderer:
     def _wrap_text(
         self, text: str, font: ImageFont.FreeTypeFont | ImageFont.ImageFont, max_width: int
     ) -> str:
-        """Wrap text to fit within a maximum width.
+        """Wrap text to fit within a maximum width using pixel-based measurement.
         
         Args:
             text: Text to wrap
@@ -1296,32 +1298,41 @@ class Renderer:
         Returns:
             Wrapped text with newlines
         """
-        # Start with character-based wrapping estimation
-        avg_char_width = max_width // max(1, len(text)) if text else 10
+        if not text:
+            return text
         
-        # Try to measure actual character widths
         dummy_img = Image.new("RGB", (1, 1))
         dummy_draw = ImageDraw.Draw(dummy_img)
         
-        try:
-            # Measure a sample character
-            sample_bbox = dummy_draw.textbbox((0, 0), "W", font=font)
-            avg_char_width = sample_bbox[2] - sample_bbox[0]
-        except Exception:
-            pass
+        words = text.split()
+        if not words:
+            return text
         
-        # Estimate characters per line
-        chars_per_line = max(1, max_width // max(1, avg_char_width))
+        lines = []
+        current_line = []
         
-        # Use textwrap for word-based wrapping
-        wrapper = textwrap.TextWrapper(
-            width=chars_per_line,
-            break_long_words=True,
-            break_on_hyphens=True,
-        )
+        for word in words:
+            # Try adding this word to current line
+            test_line = " ".join(current_line + [word])
+            try:
+                bbox = dummy_draw.textbbox((0, 0), test_line, font=font)
+                line_width = bbox[2] - bbox[0]
+            except Exception:
+                line_width = len(test_line) * 10  # Fallback
+            
+            if line_width <= max_width:
+                current_line.append(word)
+            else:
+                # Line is too long, start a new line
+                if current_line:
+                    lines.append(" ".join(current_line))
+                current_line = [word]
         
-        wrapped_lines = wrapper.wrap(text)
-        return "\n".join(wrapped_lines)
+        # Don't forget the last line
+        if current_line:
+            lines.append(" ".join(current_line))
+        
+        return "\n".join(lines)
     
     def render_page(
         self,
