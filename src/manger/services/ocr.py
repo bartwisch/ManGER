@@ -344,7 +344,7 @@ class MagiOCRService(BaseOCRService):
             # Keep it tight so polygon detection works better
             box_width = x_max_px - x_min_px
             box_height = y_max_px - y_min_px
-            padding_left = int(box_width * 0.08)   # 8% left padding (was 5%)
+            padding_left = int(box_width * 0.08)   # 8% left padding
             padding_right = int(box_width * 0.02)  # 2% right padding
             padding_y = int(box_height * 0.02)     # 2% vertical padding
             
