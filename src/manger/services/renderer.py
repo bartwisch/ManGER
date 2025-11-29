@@ -150,45 +150,77 @@ class Renderer:
         threshold: int = 200,
         min_area: int = 50,
     ) -> list[tuple[int, int]]:
-        """Extract a polygon that covers the speech bubble containing the text.
+        """Extract a rounded rectangle polygon for the text area.
         
-        Uses edge detection to find the speech bubble boundary, then falls back
-        to text-based detection if no bubble is found.
+        Creates a simple rounded rectangle INSIDE the text bounding box.
+        This is reliable and always produces smooth curves without sharp corners.
+        The polygon will never exceed the OCR bounding box.
         
         Args:
             image: Source image
             bbox: Bounding box containing text
-            threshold: Grayscale threshold for text detection (higher = more sensitive)
-            min_area: Minimum area for valid contours
+            threshold: Grayscale threshold (unused, kept for compatibility)
+            min_area: Minimum area (unused, kept for compatibility)
             
         Returns:
             List of (x, y) polygon points in absolute pixels
         """
+        import math
+        
         width, height = image.size
         x1, y1, x2, y2 = bbox.to_pixels(width, height)
         
-        # Expand the search area to find the full speech bubble
+        # NO padding - stay exactly within the OCR bounding box
+        # Actually shrink slightly inward to ensure we're inside
+        shrink = 2  # pixels inward
+        x1 = x1 + shrink
+        y1 = y1 + shrink
+        x2 = x2 - shrink
+        y2 = y2 - shrink
+        
+        # Calculate corner radius (proportional to smaller dimension)
         box_w = x2 - x1
         box_h = y2 - y1
-        expand_x = int(box_w * 0.3)
-        expand_y = int(box_h * 0.3)
         
-        search_x1 = max(0, x1 - expand_x)
-        search_y1 = max(0, y1 - expand_y)
-        search_x2 = min(width, x2 + expand_x)
-        search_y2 = min(height, y2 + expand_y)
+        if box_w <= 0 or box_h <= 0:
+            return [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
         
-        # Try to detect speech bubble first
-        bubble_polygon = self._detect_speech_bubble(
-            image, search_x1, search_y1, search_x2, search_y2,
-            x1, y1, x2, y2  # Original text bbox for validation
-        )
+        corner_radius = min(box_w, box_h) * 0.40  # 40% of smaller dimension - very rounded
+        corner_radius = max(5, min(corner_radius, 60))  # Clamp between 5-60 pixels
         
-        if bubble_polygon and len(bubble_polygon) >= 3:
-            return bubble_polygon
+        # Generate rounded rectangle points
+        points = []
+        points_per_corner = 12  # More points for smoother corners
         
-        # Fallback: detect text region
-        return self._detect_text_region(image, x1, y1, x2, y2, threshold)
+        # Top-left corner
+        for i in range(points_per_corner + 1):
+            angle = math.pi + (math.pi / 2) * (i / points_per_corner)
+            px = x1 + corner_radius + corner_radius * math.cos(angle)
+            py = y1 + corner_radius + corner_radius * math.sin(angle)
+            points.append((int(px), int(py)))
+        
+        # Top-right corner
+        for i in range(points_per_corner + 1):
+            angle = -math.pi / 2 + (math.pi / 2) * (i / points_per_corner)
+            px = x2 - corner_radius + corner_radius * math.cos(angle)
+            py = y1 + corner_radius + corner_radius * math.sin(angle)
+            points.append((int(px), int(py)))
+        
+        # Bottom-right corner
+        for i in range(points_per_corner + 1):
+            angle = 0 + (math.pi / 2) * (i / points_per_corner)
+            px = x2 - corner_radius + corner_radius * math.cos(angle)
+            py = y2 - corner_radius + corner_radius * math.sin(angle)
+            points.append((int(px), int(py)))
+        
+        # Bottom-left corner
+        for i in range(points_per_corner + 1):
+            angle = math.pi / 2 + (math.pi / 2) * (i / points_per_corner)
+            px = x1 + corner_radius + corner_radius * math.cos(angle)
+            py = y2 - corner_radius + corner_radius * math.sin(angle)
+            points.append((int(px), int(py)))
+        
+        return points
     
     def _detect_speech_bubble(
         self,

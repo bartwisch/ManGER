@@ -355,13 +355,29 @@ def draw_text_boxes(image: Image.Image, blocks: list, show_text: bool = True, sh
     # Draw polygons if requested (outline only, no fill)
     if show_polygons:
         renderer = Renderer()
+        # Same shift values as for green OCR boxes
+        shift_left = 12
+        expand_width = 8
         for i, block in enumerate(blocks):
             polygon = renderer.extract_text_polygon(image, block.bbox)
             if len(polygon) >= 3:
-                # Smooth the polygon to eliminate harsh corners
-                smoothed_polygon = smooth_polygon_for_display(polygon, num_points=150)
+                # Shift and expand polygon to match green OCR boxes
+                shifted_polygon = []
+                for (px, py) in polygon:
+                    # Shift left and expand width (approximate based on bbox center)
+                    bbox = block.bbox
+                    bbox_center_x = (bbox.x_min + bbox.x_max) / 2 * width
+                    # Points left of center get extra shift, right of center less
+                    if px < bbox_center_x:
+                        new_x = px - shift_left - expand_width
+                    else:
+                        new_x = px - shift_left + expand_width
+                    shifted_polygon.append((new_x, py))
                 
-                # Draw smooth polygon outline - thick orange line
+                # Smooth the polygon to eliminate harsh corners
+                smoothed_polygon = smooth_polygon_for_display(shifted_polygon, num_points=150)
+                
+                # Draw smooth polygon outline - thick purple line
                 for j in range(len(smoothed_polygon)):
                     p1 = smoothed_polygon[j]
                     p2 = smoothed_polygon[(j + 1) % len(smoothed_polygon)]
@@ -372,9 +388,12 @@ def draw_text_boxes(image: Image.Image, blocks: list, show_text: bool = True, sh
     for i, block in enumerate(blocks):
         # Convert normalized coordinates to pixels
         bbox = block.bbox
-        x1 = int(bbox.x_min * width)
+        # Shift boxes left and make wider for better text coverage
+        shift_left = 12
+        expand_width = 8
+        x1 = int(bbox.x_min * width) - shift_left - expand_width
         y1 = int(bbox.y_min * height)
-        x2 = int(bbox.x_max * width)
+        x2 = int(bbox.x_max * width) - shift_left + expand_width
         y2 = int(bbox.y_max * height)
         
         # Choose color based on translation status
