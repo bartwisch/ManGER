@@ -501,6 +501,59 @@ def render_sidebar():
     }
 
 
+def _process_all_selected_pages(settings: dict):
+    """Process all selected pages (OCR → Translate → Render)."""
+    selected_pages = st.session_state.selected_pages
+    total = len(selected_pages)
+    
+    pipeline = get_pipeline(settings)
+    progress_bar = st.progress(0, text="Processing pages...")
+    
+    for idx, page_num in enumerate(selected_pages):
+        progress_bar.progress((idx) / total, text=f"Processing page {page_num + 1} ({idx + 1}/{total})...")
+        
+        # Load page if not cached
+        if page_num not in st.session_state.pages_data:
+            try:
+                img = st.session_state.pdf_service.get_page_image(page_num)
+                st.session_state.pages_data[page_num] = {
+                    "image": img,
+                    "blocks": [],
+                    "result": None,
+                }
+            except Exception as e:
+                st.warning(f"Failed to load page {page_num + 1}: {e}")
+                continue
+        
+        page_data = st.session_state.pages_data[page_num]
+        
+        # Step 1: OCR
+        blocks = pipeline.ocr.process_image(page_data["image"])
+        page_data["blocks"] = blocks
+        
+        if not blocks:
+            continue
+        
+        # Step 2: Translate
+        texts = [b.original_text for b in blocks]
+        translations = pipeline.translator.translate_batch(texts)
+        
+        for block, trans in zip(blocks, translations):
+            block.translated_text = trans
+        
+        # Step 3: Render
+        translated_blocks = [b for b in blocks if b.translated_text]
+        
+        if translated_blocks:
+            result = pipeline.renderer.inpaint(page_data["image"], translated_blocks)
+            result = pipeline.renderer.typeset(result, translated_blocks)
+            page_data["result"] = result
+    
+    progress_bar.progress(1.0, text="Complete!")
+    st.success(f"✓ Processed {total} pages!")
+    st.rerun()
+
+
 def render_text_blocks(blocks: list[TextBlock], page_num: int = 0):
     """Render the text blocks table."""
     if not blocks:
@@ -557,6 +610,25 @@ def render_page_selector():
             st.rerun()
     
     st.write(f"**Selected:** {len(st.session_state.selected_pages)} of {page_count} pages")
+    
+    # Start button for all selected pages
+    if st.session_state.selected_pages:
+        settings = st.session_state.get("_current_settings", {})
+        provider = settings.get("provider", "openai")
+        api_key = settings.get("api_key", "")
+        needs_api_key = provider == "openai" and not api_key
+        
+        if st.button(
+            f"▶️ Start All Selected Pages ({len(st.session_state.selected_pages)} pages)",
+            key="start_all_selected",
+            type="primary",
+            use_container_width=True,
+            disabled=needs_api_key,
+        ):
+            _process_all_selected_pages(settings)
+        
+        if needs_api_key:
+            st.caption("⚠️ Enter OpenAI API key in sidebar or use 'dummy' provider")
     
     # Page thumbnail grid
     thumbnails = st.session_state.page_thumbnails
@@ -649,6 +721,54 @@ def render_page_viewer():
     # Get settings from session state
     settings = st.session_state.get("_current_settings", {})
     show_polygons = settings.get("show_polygons", False)
+    
+    # Start button at top of preview
+    if st.button(
+        "▶️ Start (OCR → Translate → Render)",
+        key=f"start_top_{current_page_num}",
+        type="primary",
+        use_container_width=True,
+    ):
+        provider = settings.get("provider", "openai")
+        api_key = settings.get("api_key", "")
+        needs_api_key = provider == "openai" and not api_key
+        
+        if needs_api_key:
+            st.error("⚠️ Enter OpenAI API key in sidebar or use 'dummy' provider")
+        else:
+            pipeline = get_pipeline(settings)
+            
+            # Step 1: OCR
+            with st.spinner("Step 1/3: Detecting text..."):
+                blocks = pipeline.ocr.process_image(page_data["image"])
+                page_data["blocks"] = blocks
+            
+            if not blocks:
+                st.warning("No text detected.")
+            else:
+                st.success(f"✓ Detected {len(blocks)} text blocks")
+                
+                # Step 2: Translate
+                with st.spinner("Step 2/3: Translating..."):
+                    texts = [b.original_text for b in blocks]
+                    translations = pipeline.translator.translate_batch(texts)
+                    
+                    for block, trans in zip(blocks, translations):
+                        block.translated_text = trans
+                
+                st.success("✓ Translation complete")
+                
+                # Step 3: Render
+                with st.spinner("Step 3/3: Rendering..."):
+                    translated_blocks = [b for b in blocks if b.translated_text]
+                    
+                    if translated_blocks:
+                        result = pipeline.renderer.inpaint(page_data["image"], translated_blocks)
+                        result = pipeline.renderer.typeset(result, translated_blocks)
+                        page_data["result"] = result
+                
+                st.success("✓ Rendering complete!")
+                st.rerun()
     
     # Display original and processed images side by side
     col1, col2 = st.columns(2)
