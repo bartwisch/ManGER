@@ -551,6 +551,10 @@ def init_session_state():
         st.session_state.pages_data = {}  # {page_num: {"image": img, "blocks": [], "result": None}}
     if "processing_complete" not in st.session_state:
         st.session_state.processing_complete = False
+    if "show_download_dialog" not in st.session_state:
+        st.session_state.show_download_dialog = False
+    if "pdf_bytes" not in st.session_state:
+        st.session_state.pdf_bytes = None
 
 
 def get_pipeline(settings: dict | None = None) -> MangaPipeline:
@@ -735,9 +739,13 @@ def render_sidebar():
 
 
 def _process_all_selected_pages(settings: dict):
-    """Process all selected pages (OCR → Translate → Render)."""
+    """Process all selected pages (OCR → Translate → Render) and offer PDF download."""
     selected_pages = st.session_state.selected_pages
     total = len(selected_pages)
+    
+    if total == 0:
+        st.warning("No pages selected!")
+        return
     
     pipeline = get_pipeline(settings)
     progress_bar = st.progress(0, text="Processing pages...")
@@ -765,6 +773,8 @@ def _process_all_selected_pages(settings: dict):
         page_data["blocks"] = blocks
         
         if not blocks:
+            # No text found - use original image as result
+            page_data["result"] = page_data["image"]
             continue
         
         # Step 2: Translate
@@ -781,18 +791,77 @@ def _process_all_selected_pages(settings: dict):
             result = pipeline.renderer.inpaint(page_data["image"], translated_blocks)
             result = pipeline.renderer.typeset(result, translated_blocks)
             page_data["result"] = result
+        else:
+            page_data["result"] = page_data["image"]
     
     progress_bar.progress(1.0, text="Complete!")
-    st.success(f"✓ Processed {total} pages!")
     
     # Play notification sound if enabled
     if settings.get("play_sound", True):
         play_notification_sound()
     
-    # Scroll to results
-    scroll_to_results()
+    # Mark processing as complete and trigger PDF generation
+    st.session_state.processing_complete = True
+    st.session_state.show_download_dialog = True
     
     st.rerun()
+
+
+@st.dialog("📥 Download Translated PDF")
+def _show_download_dialog():
+    """Show a dialog to download the translated PDF."""
+    selected_pages = st.session_state.selected_pages
+    
+    # Collect all result images
+    result_images = []
+    for page_num in selected_pages:
+        page_data = st.session_state.pages_data.get(page_num)
+        if page_data and page_data.get("result"):
+            result_images.append(page_data["result"])
+    
+    if not result_images:
+        st.error("No translated pages available!")
+        if st.button("Close"):
+            st.session_state.show_download_dialog = False
+            st.rerun()
+        return
+    
+    st.success(f"✅ Successfully processed {len(result_images)} pages!")
+    
+    # Generate PDF
+    try:
+        pdf_bytes = st.session_state.pdf_service.create_pdf_from_images(result_images)
+        st.session_state.pdf_bytes = pdf_bytes
+    except Exception as e:
+        st.error(f"Failed to create PDF: {e}")
+        if st.button("Close"):
+            st.session_state.show_download_dialog = False
+            st.rerun()
+        return
+    
+    # File name input
+    default_name = "translated_manga.pdf"
+    file_name = st.text_input("File name:", value=default_name)
+    
+    if not file_name.endswith(".pdf"):
+        file_name += ".pdf"
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.download_button(
+            label="📥 Download PDF",
+            data=pdf_bytes,
+            file_name=file_name,
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True,
+        )
+    
+    with col2:
+        if st.button("Close", use_container_width=True):
+            st.session_state.show_download_dialog = False
+            st.rerun()
 
 
 def render_text_blocks(blocks: list[TextBlock], page_num: int = 0):
@@ -870,6 +939,10 @@ def render_page_selector():
         
         if needs_api_key:
             st.caption("⚠️ Enter OpenAI API key in sidebar or use 'dummy' provider")
+    
+    # Show download dialog after processing is complete
+    if st.session_state.get("show_download_dialog", False):
+        _show_download_dialog()
     
     # Page thumbnail grid
     thumbnails = st.session_state.page_thumbnails

@@ -4,6 +4,7 @@ Provides functionality to:
 - Load PDF files
 - Extract page count and metadata
 - Convert PDF pages to images
+- Create PDF from images
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 import tempfile
+import io
 
 from loguru import logger
 from PIL import Image
@@ -277,6 +279,60 @@ class PDFService:
             self._file_path = None
             logger.debug("PDF document closed")
     
+    def create_pdf_from_images(
+        self,
+        images: list[Image.Image],
+        output_path: str | None = None,
+    ) -> bytes:
+        """Create a PDF from a list of PIL Images.
+        
+        Args:
+            images: List of PIL Images to combine into PDF
+            output_path: Optional path to save the PDF file
+            
+        Returns:
+            PDF file content as bytes
+        """
+        if not images:
+            raise PDFError("No images provided")
+        
+        try:
+            # Create a new PDF
+            doc = fitz.open()
+            
+            for img in images:
+                # Convert PIL Image to bytes
+                img_bytes = io.BytesIO()
+                img.save(img_bytes, format="PNG")
+                img_bytes.seek(0)
+                
+                # Create a new page with the image dimensions
+                # PyMuPDF uses points (72 per inch), so we convert pixels
+                width_pts = img.width * 72 / 150  # Assume 150 DPI for sizing
+                height_pts = img.height * 72 / 150
+                
+                page = doc.new_page(width=width_pts, height=height_pts)
+                
+                # Insert the image
+                rect = fitz.Rect(0, 0, width_pts, height_pts)
+                page.insert_image(rect, stream=img_bytes.getvalue())
+            
+            # Get PDF as bytes
+            pdf_bytes = doc.tobytes()
+            
+            # Optionally save to file
+            if output_path:
+                with open(output_path, "wb") as f:
+                    f.write(pdf_bytes)
+                logger.info(f"Saved PDF to {output_path}")
+            
+            doc.close()
+            logger.info(f"Created PDF with {len(images)} pages")
+            return pdf_bytes
+            
+        except Exception as e:
+            raise PDFError(f"Failed to create PDF: {e}") from e
+
     def __enter__(self) -> PDFService:
         """Context manager entry."""
         return self
