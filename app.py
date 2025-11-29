@@ -679,6 +679,57 @@ def render_page_viewer():
     # Action buttons for current page
     st.divider()
     
+    # Start button - runs all steps
+    if st.button(
+        "▶️ Start (OCR → Translate → Render)",
+        key=f"start_{current_page_num}",
+        type="primary",
+        use_container_width=True,
+    ):
+        provider = settings.get("provider", "openai")
+        api_key = settings.get("api_key", "")
+        needs_api_key = provider == "openai" and not api_key
+        
+        if needs_api_key:
+            st.error("⚠️ Enter OpenAI API key in sidebar or use 'dummy' provider")
+        else:
+            pipeline = get_pipeline(settings)
+            
+            # Step 1: OCR
+            with st.spinner("Step 1/3: Detecting text..."):
+                blocks = pipeline.ocr.process_image(page_data["image"])
+                page_data["blocks"] = blocks
+            
+            if not blocks:
+                st.warning("No text detected.")
+            else:
+                st.success(f"✓ Detected {len(blocks)} text blocks")
+                
+                # Step 2: Translate
+                with st.spinner("Step 2/3: Translating..."):
+                    texts = [b.original_text for b in blocks]
+                    translations = pipeline.translator.translate_batch(texts)
+                    
+                    for block, trans in zip(blocks, translations):
+                        block.translated_text = trans
+                
+                st.success("✓ Translation complete")
+                
+                # Step 3: Render
+                with st.spinner("Step 3/3: Rendering..."):
+                    translated_blocks = [b for b in blocks if b.translated_text]
+                    
+                    if translated_blocks:
+                        result = pipeline.renderer.inpaint(page_data["image"], translated_blocks)
+                        result = pipeline.renderer.typeset(result, translated_blocks)
+                        page_data["result"] = result
+                
+                st.success("✓ Rendering complete!")
+                st.rerun()
+    
+    st.divider()
+    
+    # Individual step buttons
     btn_col1, btn_col2, btn_col3 = st.columns(3)
     
     with btn_col1:

@@ -84,15 +84,21 @@ class Renderer:
             logger.warning(f"Failed to load font: {e}, using default")
             return ImageFont.load_default()
     
-    def inpaint(self, image: Image.Image, blocks: list[TextBlock]) -> Image.Image:
-        """Remove original text from the image.
+    def inpaint(
+        self, 
+        image: Image.Image, 
+        blocks: list[TextBlock],
+        use_polygons: bool = True,
+    ) -> Image.Image:
+        """Remove original text from the image using precise polygons.
         
-        Currently uses simple color fill. Can be extended to use
-        OpenCV inpainting for better results.
+        Uses the text polygon (speech bubble shape) for precise inpainting,
+        falling back to rectangle if polygon detection fails.
         
         Args:
             image: Source image
             blocks: Text blocks to remove
+            use_polygons: If True, use precise polygons for inpainting
             
         Returns:
             Inpainted image
@@ -103,30 +109,36 @@ class Renderer:
         
         for block in blocks:
             bbox = block.bbox
-            
-            # Get pixel coordinates
             x1, y1, x2, y2 = bbox.to_pixels(width, height)
             
-            # Add padding
-            padding_x = int((x2 - x1) * self.config.padding_ratio)
-            padding_y = int((y2 - y1) * self.config.padding_ratio)
+            # Try to get polygon for precise inpainting
+            polygon = None
+            if use_polygons:
+                try:
+                    polygon = self.extract_text_polygon(image, bbox)
+                    if polygon and len(polygon) >= 3:
+                        logger.debug(f"Using polygon with {len(polygon)} points for inpainting")
+                except Exception as e:
+                    logger.debug(f"Polygon extraction failed: {e}")
+                    polygon = None
             
-            x1 = max(0, x1 - padding_x)
-            y1 = max(0, y1 - padding_y)
-            x2 = min(width, x2 + padding_x)
-            y2 = min(height, y2 + padding_y)
+            # Sample background color
+            bg_color = self._sample_background_color(image, x1, y1, x2, y2)
             
-            # Simple inpainting: fill with background color
-            if self.config.inpaint_method == "simple":
-                # Sample the background color from the edges of the box
-                bg_color = self._sample_background_color(image, x1, y1, x2, y2)
-                draw.rectangle([x1, y1, x2, y2], fill=bg_color)
+            if polygon and len(polygon) >= 3:
+                # Use polygon for precise inpainting
+                draw.polygon(polygon, fill=bg_color)
             else:
-                # OpenCV inpainting would go here
-                draw.rectangle(
-                    [x1, y1, x2, y2],
-                    fill=self.config.background_color
-                )
+                # Fallback to rectangle
+                padding_x = int((x2 - x1) * self.config.padding_ratio)
+                padding_y = int((y2 - y1) * self.config.padding_ratio)
+                
+                x1 = max(0, x1 - padding_x)
+                y1 = max(0, y1 - padding_y)
+                x2 = min(width, x2 + padding_x)
+                y2 = min(height, y2 + padding_y)
+                
+                draw.rectangle([x1, y1, x2, y2], fill=bg_color)
         
         logger.debug(f"Inpainted {len(blocks)} text regions")
         return result
@@ -331,7 +343,8 @@ class Renderer:
     def _shrink_polygon_percent(
         self, 
         polygon: list[tuple[float, float]], 
-        percent: float = 0.1
+        percent: float = 0.1,
+        asymmetric: bool = True
     ) -> list[tuple[float, float]]:
         """Shrink a polygon inward by a percentage of the distance to centroid.
         
@@ -340,6 +353,7 @@ class Renderer:
         Args:
             polygon: List of (x, y) points
             percent: Percentage to shrink (0.1 = 10% toward center)
+            asymmetric: If True, shrink less on the left side (for text that starts at left)
             
         Returns:
             Shrunk polygon
@@ -351,11 +365,29 @@ class Renderer:
         cx = sum(p[0] for p in polygon) / len(polygon)
         cy = sum(p[1] for p in polygon) / len(polygon)
         
+        # Find left and right bounds
+        min_x = min(p[0] for p in polygon)
+        max_x = max(p[0] for p in polygon)
+        width = max_x - min_x
+        
         shrunk = []
         for px, py in polygon:
+            # Calculate shrink factor
+            if asymmetric and width > 0:
+                # Less shrink on the left (where text starts), more on the right
+                # Left 30% of polygon: shrink only 30% of the percent
+                # Right 70%: normal shrink
+                relative_x = (px - min_x) / width  # 0 = left, 1 = right
+                if relative_x < 0.3:
+                    local_percent = percent * 0.3  # Much less shrink on left
+                else:
+                    local_percent = percent
+            else:
+                local_percent = percent
+            
             # Move point toward centroid by percentage
-            new_x = px + (cx - px) * percent
-            new_y = py + (cy - py) * percent
+            new_x = px + (cx - px) * local_percent
+            new_y = py + (cy - py) * local_percent
             shrunk.append((new_x, new_y))
         
         return shrunk
@@ -907,13 +939,15 @@ class Renderer:
         image: Image.Image,
         blocks: list[TextBlock],
         use_translated: bool = True,
+        use_polygons: bool = True,
     ) -> Image.Image:
-        """Render text onto the image.
+        """Render text onto the image within the detected text polygon.
         
         Args:
             image: Source image (should be inpainted first)
             blocks: Text blocks with translations
             use_translated: Whether to use translated_text (True) or original_text
+            use_polygons: If True, fit text within polygon bounds
             
         Returns:
             Image with typeset text
@@ -930,13 +964,41 @@ class Renderer:
             bbox = block.bbox
             x1, y1, x2, y2 = bbox.to_pixels(width, height)
             
-            # Calculate box dimensions with padding
-            box_width = x2 - x1
-            box_height = y2 - y1
-            padding = int(min(box_width, box_height) * self.config.padding_ratio)
+            # Try to get polygon for text fitting
+            polygon = None
+            if use_polygons:
+                try:
+                    polygon = self.extract_text_polygon(image, bbox)
+                except Exception:
+                    polygon = None
             
-            inner_width = box_width - (2 * padding)
-            inner_height = box_height - (2 * padding)
+            # Calculate the text area from polygon or bbox
+            if polygon and len(polygon) >= 3:
+                # Get bounding box of polygon
+                poly_xs = [p[0] for p in polygon]
+                poly_ys = [p[1] for p in polygon]
+                px1, py1 = min(poly_xs), min(poly_ys)
+                px2, py2 = max(poly_xs), max(poly_ys)
+                
+                # Use polygon bounds with some inner padding
+                box_width = px2 - px1
+                box_height = py2 - py1
+                padding = int(min(box_width, box_height) * 0.1)
+                
+                inner_x1 = px1 + padding
+                inner_y1 = py1 + padding
+                inner_width = box_width - (2 * padding)
+                inner_height = box_height - (2 * padding)
+            else:
+                # Use bounding box
+                box_width = x2 - x1
+                box_height = y2 - y1
+                padding = int(min(box_width, box_height) * self.config.padding_ratio)
+                
+                inner_x1 = x1 + padding
+                inner_y1 = y1 + padding
+                inner_width = box_width - (2 * padding)
+                inner_height = box_height - (2 * padding)
             
             if inner_width <= 0 or inner_height <= 0:
                 continue
@@ -946,13 +1008,13 @@ class Renderer:
                 text, inner_width, inner_height, block.is_vertical
             )
             
-            # Calculate text position (centered)
+            # Calculate text position (centered in the text area)
             text_bbox = draw.textbbox((0, 0), wrapped_text, font=font)
             text_width = text_bbox[2] - text_bbox[0]
             text_height = text_bbox[3] - text_bbox[1]
             
-            text_x = x1 + padding + (inner_width - text_width) // 2
-            text_y = y1 + padding + (inner_height - text_height) // 2
+            text_x = inner_x1 + (inner_width - text_width) // 2
+            text_y = inner_y1 + (inner_height - text_height) // 2
             
             # Draw text
             draw.text(
