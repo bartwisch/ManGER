@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import io
 from loguru import logger
 
@@ -70,6 +70,68 @@ def save_api_key_to_env(api_key: str) -> None:
                 f.writelines(lines)
         except Exception as e:
             logger.warning(f"Failed to save API key: {e}")
+
+
+def draw_text_boxes(image: Image.Image, blocks: list, show_text: bool = True) -> Image.Image:
+    """Draw bounding boxes around detected text blocks.
+    
+    Args:
+        image: Original PIL Image
+        blocks: List of TextBlock objects with bounding boxes
+        show_text: Whether to show the detected text above boxes
+    
+    Returns:
+        Image with drawn bounding boxes
+    """
+    # Create a copy to draw on
+    img_with_boxes = image.copy()
+    draw = ImageDraw.Draw(img_with_boxes)
+    
+    width, height = image.size
+    
+    # Colors for different states
+    colors = {
+        "detected": (255, 0, 0),      # Red for detected only
+        "translated": (0, 255, 0),    # Green for translated
+    }
+    
+    for i, block in enumerate(blocks):
+        # Convert normalized coordinates to pixels
+        bbox = block.bbox
+        x1 = int(bbox.x_min * width)
+        y1 = int(bbox.y_min * height)
+        x2 = int(bbox.x_max * width)
+        y2 = int(bbox.y_max * height)
+        
+        # Choose color based on translation status
+        color = colors["translated"] if block.translated_text else colors["detected"]
+        
+        # Draw rectangle with thicker border
+        for offset in range(3):  # 3px border
+            draw.rectangle(
+                [x1 - offset, y1 - offset, x2 + offset, y2 + offset],
+                outline=color
+            )
+        
+        # Draw block number
+        label = f"{i + 1}"
+        if show_text and block.original_text:
+            # Truncate long text
+            text_preview = block.original_text[:20] + "..." if len(block.original_text) > 20 else block.original_text
+            label = f"{i + 1}: {text_preview}"
+        
+        # Draw label background
+        try:
+            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 14)
+        except:
+            font = ImageFont.load_default()
+        
+        text_bbox = draw.textbbox((x1, y1 - 20), label, font=font)
+        draw.rectangle([text_bbox[0] - 2, text_bbox[1] - 2, text_bbox[2] + 2, text_bbox[3] + 2], fill=color)
+        draw.text((x1, y1 - 20), label, fill=(255, 255, 255), font=font)
+    
+    return img_with_boxes
+
 
 from manger.config import get_config, AppConfig
 from manger.pipeline import MangaPipeline
@@ -408,7 +470,13 @@ def render_page_viewer():
     
     with col1:
         st.write("**Original**")
-        st.image(page_data["image"], use_container_width=True)
+        # If blocks detected, show image with bounding boxes
+        if page_data["blocks"]:
+            img_with_boxes = draw_text_boxes(page_data["image"], page_data["blocks"])
+            st.image(img_with_boxes, use_container_width=True)
+            st.caption(f"🔴 Red = detected, 🟢 Green = translated ({len(page_data['blocks'])} blocks)")
+        else:
+            st.image(page_data["image"], use_container_width=True)
     
     with col2:
         st.write("**Translated**")

@@ -323,8 +323,35 @@ class MagiOCRService(BaseOCRService):
         # Convert results to TextBlock objects
         blocks = []
         for i, bbox in enumerate(text_bboxes):
-            # Magi returns [x_min, y_min, x_max, y_max] in pixel coordinates
-            x_min, y_min, x_max, y_max = bbox[:4]
+            # Magi returns bounding boxes - need to check format
+            # Could be [x_min, y_min, x_max, y_max] or [x_center, y_center, width, height]
+            # or could already be normalized
+            logger.debug(f"Raw bbox {i}: {bbox}")
+            
+            # Check if coordinates are already normalized (0-1 range)
+            if all(0 <= coord <= 1 for coord in bbox[:4]):
+                # Already normalized
+                x_min, y_min, x_max, y_max = bbox[:4]
+                x_min_px = int(x_min * width)
+                y_min_px = int(y_min * height)
+                x_max_px = int(x_max * width)
+                y_max_px = int(y_max * height)
+            else:
+                # Pixel coordinates
+                x_min_px, y_min_px, x_max_px, y_max_px = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+            
+            # Apply padding to fix Magi's slightly off bounding boxes
+            # Expand box more on the left side where Magi tends to cut off text
+            box_width = x_max_px - x_min_px
+            box_height = y_max_px - y_min_px
+            padding_left = int(box_width * 0.12)   # 12% left padding
+            padding_right = int(box_width * 0.02)  # 2% right padding
+            padding_y = int(box_height * 0.05)     # 5% vertical padding
+            
+            x_min_px = max(0, x_min_px - padding_left)
+            y_min_px = max(0, y_min_px - padding_y)
+            x_max_px = min(width, x_max_px + padding_right)
+            y_max_px = min(height, y_max_px + padding_y)
             
             # Get OCR text (if available)
             text = ocr_texts[i] if i < len(ocr_texts) else ""
@@ -333,16 +360,17 @@ class MagiOCRService(BaseOCRService):
             speaker_id = speaker_map.get(i)
             
             # Determine if text is vertical (heuristic based on aspect ratio)
-            box_width = x_max - x_min
-            box_height = y_max - y_min
-            is_vertical = box_height > box_width * 1.5 if box_width > 0 else False
+            # Recalculate after padding
+            box_width_final = x_max_px - x_min_px
+            box_height_final = y_max_px - y_min_px
+            is_vertical = box_height_final > box_width_final * 1.5 if box_width_final > 0 else False
             
             # Check if this is essential text (dialogue vs. SFX)
             essential = is_essential[i] if i < len(is_essential) else True
             
             block = TextBlock(
                 bbox=self._normalize_coordinates(
-                    int(x_min), int(y_min), int(x_max), int(y_max),
+                    x_min_px, y_min_px, x_max_px, y_max_px,
                     width, height
                 ),
                 original_text=text,
@@ -353,7 +381,7 @@ class MagiOCRService(BaseOCRService):
                     "source": "magi",
                     "index": i,
                     "is_essential": essential,
-                    "bbox_pixels": [int(x_min), int(y_min), int(x_max), int(y_max)],
+                    "bbox_pixels": [x_min_px, y_min_px, x_max_px, y_max_px],
                 },
             )
             blocks.append(block)
