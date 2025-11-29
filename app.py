@@ -57,10 +57,22 @@ NOTIFICATION_SOUND_HTML = """
 </script>
 """
 
+# JavaScript to scroll down immediately
+SCROLL_DOWN_JS = """
+<script>
+    window.parent.document.querySelector('section.main').scrollTo({top: 99999, behavior: 'instant'});
+</script>
+"""
+
 
 def play_notification_sound():
     """Schedule notification sound to play on next render."""
     st.session_state._play_sound_pending = True
+
+
+def scroll_to_results():
+    """Schedule scroll to results on next render."""
+    st.session_state._scroll_to_results_pending = True
 
 
 def _render_pending_sound():
@@ -68,6 +80,13 @@ def _render_pending_sound():
     if st.session_state.get("_play_sound_pending", False):
         st.session_state._play_sound_pending = False
         st.components.v1.html(NOTIFICATION_SOUND_HTML, height=0)
+
+
+def _render_pending_scroll():
+    """Render scroll if pending."""
+    if st.session_state.get("_scroll_to_results_pending", False):
+        st.session_state._scroll_to_results_pending = False
+        st.components.v1.html(SCROLL_DOWN_JS, height=0)
 
 
 def load_api_key_from_env() -> str:
@@ -613,6 +632,9 @@ def _process_all_selected_pages(settings: dict):
     if settings.get("play_sound", True):
         play_notification_sound()
     
+    # Scroll to results
+    scroll_to_results()
+    
     st.rerun()
 
 
@@ -708,17 +730,18 @@ def render_page_selector():
                     st.image(thumb, use_container_width=True)
                     
                     # Checkbox for selection
-                    if st.checkbox(
+                    new_value = st.checkbox(
                         f"Page {page_num + 1}",
                         value=is_selected,
                         key=f"page_select_{page_num}",
-                    ):
-                        if page_num not in st.session_state.selected_pages:
-                            st.session_state.selected_pages.append(page_num)
-                            st.session_state.selected_pages.sort()
-                    else:
-                        if page_num in st.session_state.selected_pages:
-                            st.session_state.selected_pages.remove(page_num)
+                    )
+                    if new_value and page_num not in st.session_state.selected_pages:
+                        st.session_state.selected_pages.append(page_num)
+                        st.session_state.selected_pages.sort()
+                        st.rerun()
+                    elif not new_value and page_num in st.session_state.selected_pages:
+                        st.session_state.selected_pages.remove(page_num)
+                        st.rerun()
 
 
 def render_page_viewer():
@@ -1086,6 +1109,9 @@ def main():
     # Play any pending notification sound
     _render_pending_sound()
     
+    # Scroll to results if pending
+    _render_pending_scroll()
+    
     # Header
     st.title("📖 ManGER - Manga Translator")
     st.markdown(
@@ -1146,23 +1172,26 @@ def main():
             st.session_state.processing_complete = False
             st.rerun()
         
-        # Start All button at the very top
-        if st.session_state.selected_pages:
-            provider = settings.get("provider", "openai")
-            api_key = settings.get("api_key", "")
-            needs_api_key = provider == "openai" and not api_key
-            
-            if st.button(
-                f"▶️ Start All Selected Pages ({len(st.session_state.selected_pages)} pages)",
-                key="start_all_top",
-                type="primary",
-                use_container_width=True,
-                disabled=needs_api_key,
-            ):
-                _process_all_selected_pages(settings)
-            
-            if needs_api_key:
-                st.caption("⚠️ Enter OpenAI API key in sidebar or use 'dummy' provider")
+        # Start All button at the very top (always visible)
+        provider = settings.get("provider", "openai")
+        api_key = settings.get("api_key", "")
+        needs_api_key = provider == "openai" and not api_key
+        has_pages = len(st.session_state.selected_pages) > 0
+        
+        page_count = len(st.session_state.selected_pages)
+        button_label = f"▶️ Start All Selected Pages ({page_count} pages)" if has_pages else "▶️ Start (Select pages first)"
+        
+        if st.button(
+            button_label,
+            key="start_all_top",
+            type="primary",
+            use_container_width=True,
+            disabled=needs_api_key or not has_pages,
+        ):
+            _process_all_selected_pages(settings)
+        
+        if needs_api_key:
+            st.caption("⚠️ Enter OpenAI API key in sidebar or use 'dummy' provider")
     
     # Page selection
     if st.session_state.pdf_loaded:
