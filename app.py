@@ -227,18 +227,18 @@ def draw_text_boxes(image: Image.Image, blocks: list, show_text: bool = True, sh
         draw.rectangle([label_bbox[0] - 2, label_bbox[1] - 2, label_bbox[2] + 2, label_bbox[3] + 2], fill=group_color)
         draw.text((gx1, gy1 - 25), group_label, fill=(255, 255, 255), font=font)
     
-    # Draw polygons if requested
+    # Draw polygons if requested (outline only, no fill)
     if show_polygons:
         renderer = Renderer()
         for i, block in enumerate(blocks):
             polygon = renderer.extract_text_polygon(image, block.bbox)
             if len(polygon) >= 3:
-                # Draw filled polygon with transparency
-                overlay = Image.new("RGBA", img_with_boxes.size, (0, 0, 0, 0))
-                overlay_draw = ImageDraw.Draw(overlay)
-                overlay_draw.polygon(polygon, fill=(255, 165, 0, 80), outline=(255, 165, 0, 255))
-                img_with_boxes = Image.alpha_composite(img_with_boxes.convert("RGBA"), overlay).convert("RGB")
-                draw = ImageDraw.Draw(img_with_boxes)
+                # Draw polygon outline only (no fill) - thick orange line
+                for j in range(len(polygon)):
+                    p1 = polygon[j]
+                    p2 = polygon[(j + 1) % len(polygon)]
+                    # Draw thick line
+                    draw.line([p1, p2], fill=(255, 165, 0), width=3)
     
     # Then draw individual block boxes
     for i, block in enumerate(blocks):

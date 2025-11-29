@@ -220,6 +220,13 @@ class Renderer:
         if bubble_mask is None:
             return None
         
+        # Erode the mask to shrink it inward (away from the bubble outline)
+        # This ensures we don't overwrite the speech bubble border
+        bubble_mask = self._erode_mask(bubble_mask, iterations=4)
+        
+        if bubble_mask is None or np.sum(bubble_mask) < 100:
+            return None
+        
         # Extract boundary points from the mask
         boundary_points = self._extract_boundary(bubble_mask)
         
@@ -229,10 +236,157 @@ class Renderer:
         # Simplify the polygon to reduce points
         simplified = self._simplify_polygon(boundary_points, tolerance=3.0)
         
+        # Smooth the polygon to round off sharp corners
+        smoothed = self._smooth_polygon(simplified, iterations=3)
+        
+        # Shrink polygon inward to create buffer from bubble outline
+        # Use percentage-based shrinking for better scaling across different bubble sizes
+        shrunk = self._shrink_polygon_percent(smoothed, percent=0.08)
+        
         # Convert to absolute coordinates
-        polygon = [(int(p[0] + search_x1), int(p[1] + search_y1)) for p in simplified]
+        polygon = [(int(p[0] + search_x1), int(p[1] + search_y1)) for p in shrunk]
         
         return polygon
+    
+    def _smooth_polygon(
+        self,
+        polygon: list[tuple[float, float]],
+        iterations: int = 2
+    ) -> list[tuple[float, float]]:
+        """Smooth a polygon by averaging neighboring vertices.
+        
+        This rounds off sharp corners that might poke outside the bubble.
+        
+        Args:
+            polygon: List of (x, y) points
+            iterations: Number of smoothing passes
+            
+        Returns:
+            Smoothed polygon
+        """
+        if len(polygon) < 5:
+            return polygon
+        
+        result = list(polygon)
+        
+        for _ in range(iterations):
+            new_result = []
+            n = len(result)
+            for i in range(n):
+                # Get previous, current, and next points
+                prev_p = result[(i - 1) % n]
+                curr_p = result[i]
+                next_p = result[(i + 1) % n]
+                
+                # Average with neighbors (Chaikin-like smoothing)
+                new_x = 0.25 * prev_p[0] + 0.5 * curr_p[0] + 0.25 * next_p[0]
+                new_y = 0.25 * prev_p[1] + 0.5 * curr_p[1] + 0.25 * next_p[1]
+                new_result.append((new_x, new_y))
+            
+            result = new_result
+        
+        return result
+    
+    def _shrink_polygon(
+        self, 
+        polygon: list[tuple[int, int]], 
+        pixels: int = 5
+    ) -> list[tuple[int, int]]:
+        """Shrink a polygon inward by moving each vertex toward the centroid.
+        
+        Args:
+            polygon: List of (x, y) points
+            pixels: How many pixels to shrink inward
+            
+        Returns:
+            Shrunk polygon
+        """
+        if len(polygon) < 3:
+            return polygon
+        
+        # Calculate centroid
+        cx = sum(p[0] for p in polygon) / len(polygon)
+        cy = sum(p[1] for p in polygon) / len(polygon)
+        
+        shrunk = []
+        for px, py in polygon:
+            # Vector from point to centroid
+            dx = cx - px
+            dy = cy - py
+            
+            # Distance to centroid
+            dist = (dx * dx + dy * dy) ** 0.5
+            
+            if dist > 0:
+                # Move point toward centroid by 'pixels' amount
+                factor = pixels / dist
+                new_x = px + dx * factor
+                new_y = py + dy * factor
+                shrunk.append((new_x, new_y))
+            else:
+                shrunk.append((px, py))
+        
+        return shrunk
+    
+    def _shrink_polygon_percent(
+        self, 
+        polygon: list[tuple[float, float]], 
+        percent: float = 0.1
+    ) -> list[tuple[float, float]]:
+        """Shrink a polygon inward by a percentage of the distance to centroid.
+        
+        This scales better across different bubble sizes.
+        
+        Args:
+            polygon: List of (x, y) points
+            percent: Percentage to shrink (0.1 = 10% toward center)
+            
+        Returns:
+            Shrunk polygon
+        """
+        if len(polygon) < 3:
+            return polygon
+        
+        # Calculate centroid
+        cx = sum(p[0] for p in polygon) / len(polygon)
+        cy = sum(p[1] for p in polygon) / len(polygon)
+        
+        shrunk = []
+        for px, py in polygon:
+            # Move point toward centroid by percentage
+            new_x = px + (cx - px) * percent
+            new_y = py + (cy - py) * percent
+            shrunk.append((new_x, new_y))
+        
+        return shrunk
+    
+    def _erode_mask(self, mask: np.ndarray, iterations: int = 3) -> np.ndarray:
+        """Erode a binary mask to shrink it inward.
+        
+        This creates a buffer zone between the mask and the speech bubble outline.
+        
+        Args:
+            mask: Binary mask
+            iterations: Number of erosion iterations (more = smaller mask)
+            
+        Returns:
+            Eroded mask
+        """
+        h, w = mask.shape
+        result = mask.copy()
+        
+        for _ in range(iterations):
+            new_result = np.zeros_like(result)
+            for y in range(1, h - 1):
+                for x in range(1, w - 1):
+                    # Only keep pixel if all 4-neighbors are also set
+                    if result[y, x] > 0:
+                        if (result[y-1, x] > 0 and result[y+1, x] > 0 and
+                            result[y, x-1] > 0 and result[y, x+1] > 0):
+                            new_result[y, x] = 255
+            result = new_result
+        
+        return result
     
     def _detect_edges(self, img: np.ndarray) -> np.ndarray:
         """Detect edges using a simple gradient-based method.
@@ -243,17 +397,19 @@ class Renderer:
         h, w = img.shape
         edges = np.zeros_like(img)
         
-        # Compute gradients
-        for y in range(1, h - 1):
-            for x in range(1, w - 1):
-                # Sobel-like gradient
-                gx = (int(img[y, x + 1]) - int(img[y, x - 1]))
-                gy = (int(img[y + 1, x]) - int(img[y - 1, x]))
-                gradient = abs(gx) + abs(gy)
+        # Compute gradients with a slightly larger kernel for better edge detection
+        for y in range(2, h - 2):
+            for x in range(2, w - 2):
+                # Sobel-like gradient with 3x3 neighborhood
+                gx = (int(img[y-1, x+1]) + 2*int(img[y, x+1]) + int(img[y+1, x+1]) -
+                      int(img[y-1, x-1]) - 2*int(img[y, x-1]) - int(img[y+1, x-1]))
+                gy = (int(img[y+1, x-1]) + 2*int(img[y+1, x]) + int(img[y+1, x+1]) -
+                      int(img[y-1, x-1]) - 2*int(img[y-1, x]) - int(img[y-1, x+1]))
+                gradient = (abs(gx) + abs(gy)) // 4
                 edges[y, x] = min(255, gradient)
         
-        # Threshold to get binary edges
-        edge_threshold = 30
+        # Use a higher threshold for stronger edges (speech bubble outlines)
+        edge_threshold = 50
         return (edges > edge_threshold).astype(np.uint8) * 255
     
     def _flood_fill_bubble(
@@ -274,7 +430,7 @@ class Renderer:
         mask = np.zeros((h, w), dtype=np.uint8)
         
         # Check if starting point is valid (should be light/white background)
-        if img[start_y, start_x] < 200:
+        if img[start_y, start_x] < 180:
             # Starting point is too dark, not inside a typical speech bubble
             return None
         
@@ -282,13 +438,22 @@ class Renderer:
         stack = [(start_x, start_y)]
         
         filled_count = 0
-        max_fill = h * w * 0.8  # Don't fill more than 80% of search area
+        # Be more conservative - don't fill more than 60% of search area
+        max_fill = h * w * 0.6
+        
+        # Track if we hit the boundary of search region
+        hit_boundary = 0
+        max_boundary_hits = (h + w) * 0.3  # Allow some boundary touches but not too many
         
         while stack:
             x, y = stack.pop()
             
-            if x < 0 or x >= w or y < 0 or y >= h:
-                # Hit the edge of search region - bubble might extend beyond
+            if x < 1 or x >= w - 1 or y < 1 or y >= h - 1:
+                # Hit the edge of search region
+                hit_boundary += 1
+                if hit_boundary > max_boundary_hits:
+                    # Too many boundary hits - we're probably escaping the bubble
+                    return None
                 continue
             
             if visited[y, x]:
@@ -296,12 +461,13 @@ class Renderer:
             
             visited[y, x] = True
             
-            # Stop at edges (bubble boundary)
+            # Stop at edges (bubble boundary) - strong edges
             if edges[y, x] > 0:
                 continue
             
-            # Stop at very dark pixels (likely panel border or outside bubble)
-            if img[y, x] < 100:
+            # Stop at dark pixels (likely text or outside bubble)
+            # But be more lenient for slightly colored backgrounds
+            if img[y, x] < 150:
                 continue
             
             mask[y, x] = 255
