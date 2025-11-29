@@ -24,36 +24,50 @@ ENV_FILE = Path(__file__).parent / ".env"
 NOTIFICATION_SOUND_HTML = """
 <script>
 (function() {
-    var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    var oscillator = audioCtx.createOscillator();
-    var gainNode = audioCtx.createGain();
-    
-    oscillator.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-    
-    oscillator.frequency.value = 800;
-    oscillator.type = 'sine';
-    gainNode.gain.value = 0.3;
-    
-    oscillator.start();
-    oscillator.stop(audioCtx.currentTime + 0.2);
-    
-    setTimeout(function() {
-        var oscillator2 = audioCtx.createOscillator();
-        oscillator2.connect(gainNode);
-        oscillator2.frequency.value = 1000;
-        oscillator2.type = 'sine';
-        oscillator2.start();
-        oscillator2.stop(audioCtx.currentTime + 0.3);
-    }, 200);
+    try {
+        var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        
+        // First beep
+        var oscillator = audioCtx.createOscillator();
+        var gainNode = audioCtx.createGain();
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        oscillator.frequency.value = 880;
+        oscillator.type = 'sine';
+        gainNode.gain.value = 0.5;
+        oscillator.start();
+        oscillator.stop(audioCtx.currentTime + 0.15);
+        
+        // Second beep (higher pitch)
+        setTimeout(function() {
+            var oscillator2 = audioCtx.createOscillator();
+            var gainNode2 = audioCtx.createGain();
+            oscillator2.connect(gainNode2);
+            gainNode2.connect(audioCtx.destination);
+            oscillator2.frequency.value = 1100;
+            oscillator2.type = 'sine';
+            gainNode2.gain.value = 0.5;
+            oscillator2.start();
+            oscillator2.stop(audioCtx.currentTime + 0.2);
+        }, 180);
+    } catch(e) {
+        console.log('Audio not supported:', e);
+    }
 })();
 </script>
 """
 
 
 def play_notification_sound():
-    """Play a notification sound using JavaScript."""
-    st.components.v1.html(NOTIFICATION_SOUND_HTML, height=0)
+    """Schedule notification sound to play on next render."""
+    st.session_state._play_sound_pending = True
+
+
+def _render_pending_sound():
+    """Render the sound if pending."""
+    if st.session_state.get("_play_sound_pending", False):
+        st.session_state._play_sound_pending = False
+        st.components.v1.html(NOTIFICATION_SOUND_HTML, height=0)
 
 
 def load_api_key_from_env() -> str:
@@ -1069,6 +1083,9 @@ def main():
     """Main application entry point."""
     init_session_state()
     
+    # Play any pending notification sound
+    _render_pending_sound()
+    
     # Header
     st.title("📖 ManGER - Manga Translator")
     st.markdown(
@@ -1128,6 +1145,24 @@ def main():
             st.session_state.current_page_idx = 0
             st.session_state.processing_complete = False
             st.rerun()
+        
+        # Start All button at the very top
+        if st.session_state.selected_pages:
+            provider = settings.get("provider", "openai")
+            api_key = settings.get("api_key", "")
+            needs_api_key = provider == "openai" and not api_key
+            
+            if st.button(
+                f"▶️ Start All Selected Pages ({len(st.session_state.selected_pages)} pages)",
+                key="start_all_top",
+                type="primary",
+                use_container_width=True,
+                disabled=needs_api_key,
+            ):
+                _process_all_selected_pages(settings)
+            
+            if needs_api_key:
+                st.caption("⚠️ Enter OpenAI API key in sidebar or use 'dummy' provider")
     
     # Page selection
     if st.session_state.pdf_loaded:

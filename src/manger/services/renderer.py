@@ -234,7 +234,7 @@ class Renderer:
         
         # Erode the mask to shrink it inward (away from the bubble outline)
         # This ensures we don't overwrite the speech bubble border
-        bubble_mask = self._erode_mask(bubble_mask, iterations=10)
+        bubble_mask = self._erode_mask(bubble_mask, iterations=12)
         
         if bubble_mask is None or np.sum(bubble_mask) < 100:
             return None
@@ -248,12 +248,13 @@ class Renderer:
         # Simplify the polygon to reduce points
         simplified = self._simplify_polygon(boundary_points, tolerance=3.0)
         
-        # Smooth the polygon more aggressively to round off sharp corners
-        smoothed = self._smooth_polygon(simplified, iterations=6)
+        # Smooth the polygon aggressively to round off sharp corners
+        # More iterations = rounder corners
+        smoothed = self._smooth_polygon(simplified, iterations=10)
         
         # Shrink polygon inward to create buffer from bubble outline
         # Use percentage-based shrinking for better scaling across different bubble sizes
-        shrunk = self._shrink_polygon_percent(smoothed, percent=0.12)
+        shrunk = self._shrink_polygon_percent(smoothed, percent=0.15)
         
         # Convert to absolute coordinates
         polygon = [(int(p[0] + search_x1), int(p[1] + search_y1)) for p in shrunk]
@@ -285,14 +286,18 @@ class Renderer:
             new_result = []
             n = len(result)
             for i in range(n):
-                # Get previous, current, and next points
+                # Get surrounding points for stronger smoothing
+                prev2_p = result[(i - 2) % n]
                 prev_p = result[(i - 1) % n]
                 curr_p = result[i]
                 next_p = result[(i + 1) % n]
+                next2_p = result[(i + 2) % n]
                 
-                # Average with neighbors (Chaikin-like smoothing)
-                new_x = 0.25 * prev_p[0] + 0.5 * curr_p[0] + 0.25 * next_p[0]
-                new_y = 0.25 * prev_p[1] + 0.5 * curr_p[1] + 0.25 * next_p[1]
+                # Always use strong 5-point smoothing to round ALL corners equally
+                # This ensures consistent rounding on all sides
+                new_x = 0.1 * prev2_p[0] + 0.2 * prev_p[0] + 0.4 * curr_p[0] + 0.2 * next_p[0] + 0.1 * next2_p[0]
+                new_y = 0.1 * prev2_p[1] + 0.2 * prev_p[1] + 0.4 * curr_p[1] + 0.2 * next_p[1] + 0.1 * next2_p[1]
+                
                 new_result.append((new_x, new_y))
             
             result = new_result
