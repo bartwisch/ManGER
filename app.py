@@ -528,14 +528,49 @@ st.markdown("""
     object-fit: contain;
 }
 
-/* Reduce vertical spacing in page selector */
-.page-selector-section [data-testid="stVerticalBlock"] > div:has(> [data-testid="stHorizontalBlock"]) {
-    margin-bottom: -1rem;
+/* Compact the button row layout */
+.stHorizontalBlock {
+    gap: 0.5rem !important;
 }
 
-/* Reduce gap between toggle and buttons */
-[data-testid="stHorizontalBlock"]:has([data-testid="stCheckbox"]) + [data-testid="stHorizontalBlock"] {
-    margin-top: -0.5rem;
+/* Target the specific vertical block gap */
+[data-testid="stVerticalBlock"] {
+    gap: 0.5rem !important;
+}
+
+/* Remove extra wrapper margins */
+[data-testid="stLayoutWrapper"] {
+    margin: 0 !important;
+}
+
+.stColumn {
+    padding: 0 !important;
+}
+
+/* Compact element containers */
+.stElementContainer {
+    margin: 0 !important;
+}
+
+/* Reduce button spacing */
+.stButton {
+    margin: 0 !important;
+}
+
+/* Reduce spacing after subheader */
+h3 {
+    margin-bottom: 0.25rem !important;
+}
+
+/* Compact toggle/checkbox */
+.stCheckbox {
+    margin-bottom: 0 !important;
+}
+
+/* Compact info alerts */
+[data-testid="stAlert"] {
+    margin: 0.25rem 0 !important;
+    padding: 0.5rem !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1028,9 +1063,9 @@ def render_page_selector():
             st.info("👉 Click a start page, then click an end page to select the range.")
     
     # Quick selection buttons and selected count on same row
-    col_btns, col_count = st.columns([4, 1])
+    col_btns, col_count = st.columns([2, 1])
     with col_btns:
-        btn1, btn2, btn3, btn4 = st.columns(4)
+        btn1, btn2 = st.columns(2)
         with btn1:
             if st.button("Select All", use_container_width=True, on_click=dismiss_download_dialog):
                 st.session_state.selected_pages = list(range(page_count))
@@ -1042,18 +1077,6 @@ def render_page_selector():
                 st.session_state.selected_pages = []
                 for i in range(page_count):
                     st.session_state[f"page_select_{i}"] = False
-                st.rerun()
-        with btn3:
-            if st.button("Select Odd Pages", use_container_width=True, on_click=dismiss_download_dialog):
-                st.session_state.selected_pages = list(range(0, page_count, 2))
-                for i in range(page_count):
-                    st.session_state[f"page_select_{i}"] = (i % 2 == 0)
-                st.rerun()
-        with btn4:
-            if st.button("Select Even Pages", use_container_width=True, on_click=dismiss_download_dialog):
-                st.session_state.selected_pages = list(range(1, page_count, 2))
-                for i in range(page_count):
-                    st.session_state[f"page_select_{i}"] = (i % 2 == 1)
                 st.rerun()
     with col_count:
         st.markdown(f"**{len(st.session_state.selected_pages)}/{page_count}** pages")
