@@ -1,0 +1,7 @@
+[server]
+# Maximum upload size in MB (default is 200MB)
+maxUploadSize = 1000
+
+[browser]
+# Disable gathering usage statistics
+gatherUsageStats = false

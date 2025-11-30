@@ -86,6 +86,31 @@ class TranslationConfig(BaseSettings):
     )
 
 
+class PDFConfig(BaseSettings):
+    """Configuration for PDF output."""
+    
+    model_config = SettingsConfigDict(env_prefix="MANGER_PDF_")
+    
+    jpeg_quality: int = Field(
+        default=75,
+        ge=20,
+        le=100,
+        description="JPEG quality for images in PDF (20-100, lower = smaller file)",
+    )
+    max_dimension: int = Field(
+        default=1400,
+        ge=800,
+        le=4000,
+        description="Maximum image dimension in pixels (800-4000)",
+    )
+    dpi: int = Field(
+        default=150,
+        ge=72,
+        le=300,
+        description="DPI for PDF page sizing (72-300)",
+    )
+
+
 class RenderConfig(BaseSettings):
     """Configuration for rendering/typesetting."""
     
@@ -168,6 +193,7 @@ class AppConfig(BaseSettings):
     ocr: OCRConfig = Field(default_factory=OCRConfig)
     translation: TranslationConfig = Field(default_factory=TranslationConfig)
     render: RenderConfig = Field(default_factory=RenderConfig)
+    pdf: PDFConfig = Field(default_factory=PDFConfig)
     
     def ensure_directories(self) -> None:
         """Create output and temp directories if they don't exist."""

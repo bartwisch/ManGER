@@ -18,6 +18,8 @@ from loguru import logger
 from PIL import Image
 import fitz
 
+from manger.config import PDFConfig, get_config
+
 if TYPE_CHECKING:
     pass
 
@@ -43,13 +45,15 @@ class PDFService:
     Uses PyMuPDF (fitz) for PDF processing.
     """
     
-    def __init__(self, dpi: int = 200):
+    def __init__(self, dpi: int = 200, config: PDFConfig | None = None):
         """Initialize the PDF service.
         
         Args:
             dpi: Resolution for rendering pages (default: 200)
+            config: PDF configuration for output settings
         """
         self.dpi = dpi
+        self.config = config or get_config().pdf
         self._doc = None
         self._file_path: str | None = None
     
@@ -283,12 +287,19 @@ class PDFService:
         self,
         images: list[Image.Image],
         output_path: str | None = None,
+        quality: int | None = None,
+        max_dimension: int | None = None,
     ) -> bytes:
         """Create a PDF from a list of PIL Images.
+        
+        Optimized for small file sizes while maintaining readability.
+        Uses config values if parameters not specified.
         
         Args:
             images: List of PIL Images to combine into PDF
             output_path: Optional path to save the PDF file
+            quality: JPEG quality (1-100), uses config if not specified
+            max_dimension: Maximum width/height in pixels, uses config if not specified
             
         Returns:
             PDF file content as bytes
@@ -296,20 +307,51 @@ class PDFService:
         if not images:
             raise PDFError("No images provided")
         
+        # Use config values if not explicitly provided
+        quality = quality if quality is not None else self.config.jpeg_quality
+        max_dimension = max_dimension if max_dimension is not None else self.config.max_dimension
+        output_dpi = self.config.dpi
+        
         try:
             # Create a new PDF
             doc = fitz.open()
             
             for img in images:
-                # Convert PIL Image to bytes
+                # Aggressively resize to reduce file size
+                # Manga is typically readable at 1400px max dimension
+                if max_dimension and (img.width > max_dimension or img.height > max_dimension):
+                    ratio = min(max_dimension / img.width, max_dimension / img.height)
+                    new_size = (int(img.width * ratio), int(img.height * ratio))
+                    img = img.resize(new_size, Image.Resampling.LANCZOS)
+                    logger.debug(f"Resized image to {new_size[0]}x{new_size[1]}")
+                
+                # Convert to RGB if necessary (JPEG doesn't support RGBA)
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    # Create white background for transparent images
+                    background = Image.new('RGB', img.size, (255, 255, 255))
+                    if img.mode == 'P':
+                        img = img.convert('RGBA')
+                    background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                    img = background
+                elif img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                # Convert PIL Image to JPEG bytes with aggressive compression
                 img_bytes = io.BytesIO()
-                img.save(img_bytes, format="PNG")
+                img.save(
+                    img_bytes, 
+                    format="JPEG", 
+                    quality=quality, 
+                    optimize=True,
+                    progressive=True,  # Progressive JPEG for better compression
+                    subsampling=2,  # 4:2:0 chroma subsampling for smaller size
+                )
                 img_bytes.seek(0)
                 
                 # Create a new page with the image dimensions
                 # PyMuPDF uses points (72 per inch), so we convert pixels
-                width_pts = img.width * 72 / 150  # Assume 150 DPI for sizing
-                height_pts = img.height * 72 / 150
+                width_pts = img.width * 72 / output_dpi
+                height_pts = img.height * 72 / output_dpi
                 
                 page = doc.new_page(width=width_pts, height=height_pts)
                 
@@ -317,8 +359,15 @@ class PDFService:
                 rect = fitz.Rect(0, 0, width_pts, height_pts)
                 page.insert_image(rect, stream=img_bytes.getvalue())
             
-            # Get PDF as bytes
-            pdf_bytes = doc.tobytes()
+            # Get PDF as bytes with maximum compression
+            # garbage=4: remove unused objects, compact xref, merge duplicates, clean pages
+            # deflate=True: compress streams
+            # clean=True: clean and sanitize content streams
+            pdf_bytes = doc.tobytes(
+                deflate=True, 
+                garbage=4,
+                clean=True,
+            )
             
             # Optionally save to file
             if output_path:
@@ -327,7 +376,7 @@ class PDFService:
                 logger.info(f"Saved PDF to {output_path}")
             
             doc.close()
-            logger.info(f"Created PDF with {len(images)} pages")
+            logger.info(f"Created PDF with {len(images)} pages ({len(pdf_bytes) / 1024 / 1024:.1f} MB)")
             return pdf_bytes
             
         except Exception as e:
@@ -364,7 +413,7 @@ class PDFService:
                 merged_doc.close()
 
     def compress_pdf(self, pdf_bytes: bytes) -> bytes:
-        """Compress a PDF file.
+        """Compress a PDF file (structure only, not images).
         
         Args:
             pdf_bytes: PDF file content as bytes
@@ -385,6 +434,78 @@ class PDFService:
                 
         except Exception as e:
             raise PDFError(f"Failed to compress PDF: {e}") from e
+
+    def shrink_pdf(
+        self,
+        pdf_bytes: bytes,
+        quality: int | None = None,
+        max_dimension: int | None = None,
+        output_path: str | None = None,
+    ) -> bytes:
+        """Shrink a PDF by re-compressing all images.
+        
+        This is useful for reducing the size of existing large PDFs.
+        Each page is extracted as an image and re-compressed with the specified settings.
+        
+        Args:
+            pdf_bytes: PDF file content as bytes
+            quality: JPEG quality (1-100), uses config if not specified
+            max_dimension: Maximum image dimension in pixels, uses config if not specified
+            output_path: Optional path to save the shrunk PDF
+            
+        Returns:
+            Shrunk PDF content as bytes
+        """
+        if not pdf_bytes:
+            raise PDFError("No PDF content provided")
+        
+        # Use config values if not explicitly provided
+        quality = quality if quality is not None else self.config.jpeg_quality
+        max_dimension = max_dimension if max_dimension is not None else self.config.max_dimension
+        output_dpi = self.config.dpi
+        
+        original_size = len(pdf_bytes) / 1024 / 1024  # MB
+        logger.info(f"Shrinking PDF: {original_size:.1f} MB, quality={quality}, max_dim={max_dimension}")
+        
+        try:
+            # Open the source PDF
+            src_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            
+            # Extract all pages as images and re-compress
+            images = []
+            for page_num in range(len(src_doc)):
+                page = src_doc[page_num]
+                
+                # Render page to image at reasonable DPI
+                # Use 150 DPI for extraction (good balance of quality/size)
+                zoom = 150 / 72.0
+                mat = fitz.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=mat)
+                
+                # Convert to PIL Image
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                images.append(img)
+                
+                logger.debug(f"Extracted page {page_num + 1}/{len(src_doc)}")
+            
+            src_doc.close()
+            
+            # Create new PDF with compressed images
+            result = self.create_pdf_from_images(
+                images,
+                output_path=output_path,
+                quality=quality,
+                max_dimension=max_dimension,
+            )
+            
+            new_size = len(result) / 1024 / 1024  # MB
+            reduction = (1 - new_size / original_size) * 100
+            logger.info(f"PDF shrunk: {original_size:.1f} MB → {new_size:.1f} MB ({reduction:.0f}% reduction)")
+            
+            return result
+            
+        except Exception as e:
+            raise PDFError(f"Failed to shrink PDF: {e}") from e
 
     def __enter__(self) -> PDFService:
         """Context manager entry."""

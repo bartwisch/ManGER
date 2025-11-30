@@ -716,6 +716,25 @@ def render_sidebar():
         help="DPI for rendering PDF pages (higher = better quality but slower)",
     )
     
+    st.sidebar.subheader("PDF Output Settings")
+    pdf_quality = st.sidebar.slider(
+        "JPEG Quality",
+        min_value=30,
+        max_value=95,
+        value=75,
+        step=5,
+        help="JPEG quality for images in PDF (lower = smaller file size)",
+    )
+    
+    pdf_max_dimension = st.sidebar.slider(
+        "Max Image Size",
+        min_value=800,
+        max_value=2400,
+        value=1400,
+        step=100,
+        help="Maximum image dimension in pixels (lower = smaller file size)",
+    )
+    
     st.sidebar.subheader("Display Settings")
     show_polygons = st.sidebar.checkbox(
         "Show Text Polygons",
@@ -762,6 +781,8 @@ def render_sidebar():
         "ocr_engine": ocr_engine,
         "magi_version": magi_version,
         "play_sound": play_sound,
+        "pdf_quality": pdf_quality,
+        "pdf_max_dimension": pdf_max_dimension,
     }
 
 
@@ -854,9 +875,18 @@ def _show_download_dialog():
     
     st.success(f"✅ Successfully processed {len(result_images)} pages!")
     
-    # Generate PDF
+    # Get PDF settings from session state
+    current_settings = st.session_state.get("_current_settings", {})
+    pdf_quality = current_settings.get("pdf_quality", 75)
+    pdf_max_dimension = current_settings.get("pdf_max_dimension", 1400)
+    
+    # Generate PDF with current settings
     try:
-        pdf_bytes = st.session_state.pdf_service.create_pdf_from_images(result_images)
+        pdf_bytes = st.session_state.pdf_service.create_pdf_from_images(
+            result_images,
+            quality=pdf_quality,
+            max_dimension=pdf_max_dimension,
+        )
         st.session_state.pdf_bytes = pdf_bytes
     except Exception as e:
         st.error(f"Failed to create PDF: {e}")
