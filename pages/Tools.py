@@ -236,12 +236,16 @@ with tab3:
     def download_page_as_pdf(url: str, progress_callback=None) -> bytes:
         """Load a webpage and print it as PDF using Playwright."""
         from playwright.sync_api import sync_playwright
+        from loguru import logger
+        
+        logger.info(f"Starting download for: {url}")
         
         if progress_callback:
-            progress_callback(0.1, "Starting browser...")
+            progress_callback(0.05, "Starting browser...")
         
         with sync_playwright() as p:
             # Launch headless browser
+            logger.debug("Launching Chromium...")
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
                 viewport={"width": 1200, "height": 800},
@@ -250,18 +254,24 @@ with tab3:
             page = context.new_page()
             
             if progress_callback:
-                progress_callback(0.2, "Loading page...")
+                progress_callback(0.1, "Loading page...")
             
-            # Navigate to URL
-            page.goto(url, wait_until="networkidle", timeout=60000)
+            # Navigate to URL - use domcontentloaded instead of networkidle (faster, more reliable)
+            logger.debug(f"Navigating to {url}...")
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            except Exception as e:
+                logger.warning(f"Initial load timeout, continuing anyway: {e}")
             
-            # Wait for initial content
-            time.sleep(2)
+            # Wait for page to settle
+            logger.debug("Waiting for page to settle...")
+            time.sleep(3)
             
             if progress_callback:
-                progress_callback(0.4, "Scrolling to load all images...")
+                progress_callback(0.2, "Scrolling to load all images...")
             
             # Scroll to bottom to trigger lazy loading
+            logger.debug("Scrolling page...")
             page.evaluate("""
                 async () => {
                     await new Promise((resolve) => {
@@ -275,14 +285,18 @@ with tab3:
                                 resolve();
                             }
                         }, 100);
-                        // Timeout after 10 seconds
-                        setTimeout(() => { clearInterval(timer); resolve(); }, 10000);
+                        // Timeout after 15 seconds
+                        setTimeout(() => { clearInterval(timer); resolve(); }, 15000);
                     });
                 }
             """)
             
+            if progress_callback:
+                progress_callback(0.5, "Waiting for images to load...")
+            
             # Wait for images to load after scrolling
-            time.sleep(2)
+            logger.debug("Waiting for images to load...")
+            time.sleep(3)
             
             # Scroll back to top
             page.evaluate("window.scrollTo(0, 0)")
@@ -291,6 +305,7 @@ with tab3:
             if progress_callback:
                 progress_callback(0.6, "Hiding non-essential elements...")
             
+            logger.debug("Hiding non-content elements...")
             # Try to hide common non-content elements (headers, footers, ads, navigation)
             page.evaluate("""
                 () => {
@@ -320,6 +335,7 @@ with tab3:
             if progress_callback:
                 progress_callback(0.8, "Generating PDF...")
             
+            logger.debug("Generating PDF...")
             # Print to PDF
             pdf_bytes = page.pdf(
                 format="A4",
@@ -327,6 +343,7 @@ with tab3:
                 margin={"top": "10mm", "bottom": "10mm", "left": "5mm", "right": "5mm"},
             )
             
+            logger.info(f"Browser PDF generated: {len(pdf_bytes) / 1024 / 1024:.1f} MB")
             browser.close()
             
             if progress_callback:
@@ -402,9 +419,11 @@ with tab3:
     # Button always visible, disabled if no URL
     if st.button("📥 Download & Create PDF", type="primary", use_container_width=True, disabled=not url):
         progress_bar = st.progress(0, text="Starting...")
+        status_text = st.empty()  # For detailed status updates
         
         def update_progress(progress, text):
             progress_bar.progress(min(progress, 0.99), text=text)
+            status_text.info(f"🔄 {text}")
         
         try:
             # Step 1: Download page as PDF
@@ -421,8 +440,9 @@ with tab3:
                 max_dimension=max_dimension,
             )
             
-            # Clear progress bar
+            # Clear progress displays
             progress_bar.empty()
+            status_text.empty()
             
             pdf_size_mb = len(pdf_bytes) / (1024 * 1024)
             reduction = (1 - pdf_size_mb / raw_size_mb) * 100 if raw_size_mb > 0 else 0
@@ -440,6 +460,7 @@ with tab3:
             
         except Exception as e:
             progress_bar.empty()
+            status_text.empty()
             st.error(f"❌ Error: {e}")
             st.exception(e)
     
