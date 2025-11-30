@@ -18,12 +18,7 @@ st.set_page_config(
     layout="wide",
 )
 
-# Header with navigation
-col1, col2 = st.columns([4, 1])
-with col1:
-    st.title("🛠️ Tools")
-with col2:
-    st.link_button("🏠 Start Translation", "/", use_container_width=True, type="primary")
+st.title("🛠️ Tools")
 
 tab1, tab2, tab3, tab4 = st.tabs(["📄 PDF Combiner", "📉 PDF Shrinker", "🌐 Web Manga to PDF", "🚧 More Tools"])
 
