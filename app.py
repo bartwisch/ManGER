@@ -557,6 +557,10 @@ def init_session_state():
         st.session_state.pdf_bytes = None
     if "original_filename" not in st.session_state:
         st.session_state.original_filename = "manga.pdf"
+    if "range_select_mode" not in st.session_state:
+        st.session_state.range_select_mode = False
+    if "last_clicked_page" not in st.session_state:
+        st.session_state.last_clicked_page = None
 
 
 def dismiss_download_dialog():
@@ -941,13 +945,47 @@ def render_page_selector():
     # Sync selected_pages from checkbox states at the start (for accurate count display)
     # Only sync if checkbox states exist (i.e., thumbnails have been rendered before)
     first_checkbox_key = "page_select_0"
+    
+    # Range Selection Logic
+    if "range_select_mode" not in st.session_state:
+        st.session_state.range_select_mode = False
+    
+    # Detect which checkbox changed
+    changed_page = None
+    new_selected = []
+    
     if first_checkbox_key in st.session_state:
-        new_selected = []
         for page_num in range(page_count):
             checkbox_key = f"page_select_{page_num}"
-            if st.session_state.get(checkbox_key, False):
+            is_checked = st.session_state.get(checkbox_key, False)
+            
+            # Check if this specific checkbox changed since last run (we need to track previous state ideally,
+            # but here we can infer from user interaction if we had previous state.
+            # Streamlit doesn't give us "what changed" easily without callbacks.
+            # So we will rely on the callback approach or just check against internal tracking?)
+            
+            # Actually, the simplest way for range select is to use the callback on the checkbox itself.
+            # But we can't pass arguments easily to on_change in a loop without partials.
+            # Let's stick to the plan: Checkbox state is source of truth.
+            
+            if is_checked:
                 new_selected.append(page_num)
+        
         st.session_state.selected_pages = new_selected
+    
+    # Range Selection Toggle
+    col_mode, col_info = st.columns([1, 3])
+    with col_mode:
+        range_mode = st.toggle("Range Selection Mode", value=st.session_state.range_select_mode, help="When ON, clicking a page selects all pages between it and the last clicked page.")
+        if range_mode != st.session_state.range_select_mode:
+            st.session_state.range_select_mode = range_mode
+            # Reset last clicked when mode changes
+            st.session_state.last_clicked_page = None
+            st.rerun()
+            
+    with col_info:
+        if st.session_state.range_select_mode:
+            st.info("👉 Click a start page, then click an end page to select the range.")
     
     # Quick selection buttons
     col1, col2, col3, col4 = st.columns(4)
@@ -1045,11 +1083,60 @@ def render_page_selector():
                     if checkbox_key not in st.session_state:
                         st.session_state[checkbox_key] = page_num in st.session_state.selected_pages
                     
+                    def on_checkbox_change(p_num=page_num):
+                        dismiss_download_dialog()
+                        
+                        # Handle Range Selection
+                        if st.session_state.range_select_mode:
+                            is_checked = st.session_state.get(f"page_select_{p_num}", False)
+                            
+                            if is_checked:
+                                last_page = st.session_state.last_clicked_page
+                                
+                                if last_page is not None and last_page != p_num:
+                                    # Select range
+                                    start = min(last_page, p_num)
+                                    end = max(last_page, p_num)
+                                    
+                                    for i in range(start, end + 1):
+                                        st.session_state[f"page_select_{i}"] = True
+                                    
+                                    # Update selected pages list immediately
+                                    new_sel = []
+                                    for i in range(st.session_state.pdf_page_count):
+                                        if st.session_state.get(f"page_select_{i}", False):
+                                            new_sel.append(i)
+                                    st.session_state.selected_pages = new_sel
+                                    
+                                # Update last clicked
+                                st.session_state.last_clicked_page = p_num
+                            else:
+                                # If unchecked, just reset last clicked? Or keep it?
+                                # Usually range select implies clicking to ADD to selection.
+                                # If unchecking, maybe we just treat it as a new anchor?
+                                st.session_state.last_clicked_page = p_num
+                        else:
+                            # Normal mode - just track this as potential anchor if mode is switched on later?
+                            # Or just ignore.
+                            st.session_state.last_clicked_page = p_num
+
                     st.checkbox(
                         f"{page_num + 1}",
                         key=checkbox_key,
-                        on_change=dismiss_download_dialog,
+                        on_change=on_checkbox_change,
                     )
+        
+        # Start button at bottom of thumbnails
+        st.divider()
+        if st.button(
+            f"▶️ Start All Selected Pages ({len(st.session_state.selected_pages)} pages)" if st.session_state.selected_pages else "▶️ Start (select pages first)",
+            key="start_all_selected_bottom",
+            type="primary",
+            use_container_width=True,
+            disabled=needs_api_key or no_pages_selected,
+            on_click=dismiss_download_dialog,
+        ):
+            _process_all_selected_pages(settings)
 
 
 def render_page_viewer():
@@ -1117,7 +1204,7 @@ def render_page_viewer():
     
     # Start button at top of preview
     if st.button(
-        "▶️ Start (OCR → Translate → Render)",
+        "▶️ Process Current Page Only",
         key=f"start_top_{current_page_num}",
         type="primary",
         use_container_width=True,
@@ -1197,7 +1284,7 @@ def render_page_viewer():
     
     # Start button - runs all steps
     if st.button(
-        "▶️ Start (OCR → Translate → Render)",
+        "▶️ Process Current Page Only",
         key=f"start_{current_page_num}",
         type="primary",
         use_container_width=True,
