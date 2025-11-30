@@ -1321,7 +1321,8 @@ def render_batch_processing():
                 f"📥 Download All ({len(processed_pages)} pages)",
                 use_container_width=True,
             ):
-                st.info("Download functionality requires additional implementation for multi-page PDFs.")
+                st.session_state.show_download_dialog = True
+                st.rerun()
 
 
 def process_all_pages():
@@ -1385,6 +1386,7 @@ def process_all_pages():
     progress_bar.progress(1.0)
     status_text.text("✅ Processing complete!")
     st.session_state.processing_complete = True
+    st.session_state.show_download_dialog = True
     st.rerun()
 
 
