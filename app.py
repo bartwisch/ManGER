@@ -1538,8 +1538,13 @@ def main():
     # Play any pending notification sound
     _render_pending_sound()
     
-    # Header
-    st.title("📖 ManGER - Manga Translator")
+    # Header with navigation
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.title("📖 ManGER - Manga Translator")
+    with col2:
+        st.link_button("🛠️ Tools", "/Tools", use_container_width=True)
+    
     st.markdown(
         "Upload a PDF manga to detect and translate text. "
         "Select the pages you want to translate."

@@ -1,6 +1,11 @@
 import streamlit as st
 import sys
+import re
+import io
+import time
 from pathlib import Path
+
+from PIL import Image
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -13,9 +18,14 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("🛠️ Tools")
+# Header with navigation
+col1, col2 = st.columns([4, 1])
+with col1:
+    st.title("🛠️ Tools")
+with col2:
+    st.link_button("🏠 Start Translation", "/", use_container_width=True, type="primary")
 
-tab1, tab2, tab3 = st.tabs(["📄 PDF Combiner", "📉 PDF Shrinker", "🚧 More Tools"])
+tab1, tab2, tab3, tab4 = st.tabs(["📄 PDF Combiner", "📉 PDF Shrinker", "🌐 Web Manga to PDF", "🚧 More Tools"])
 
 with tab1:
     st.header("PDF Combiner")
@@ -221,4 +231,269 @@ with tab2:
                     st.exception(e)
 
 with tab3:
+    st.header("🌐 Web Manga to PDF")
+    st.markdown("""
+    Download manga chapters from websites and convert them to PDF.
+    
+    **✨ Now with JavaScript support!** Uses a real browser to load pages.
+    """)
+    
+    def extract_images_with_browser(url: str, progress_callback=None) -> list[Image.Image]:
+        """Extract manga images using Playwright browser."""
+        from playwright.sync_api import sync_playwright
+        
+        if progress_callback:
+            progress_callback(0.05, "Starting browser...")
+        
+        images = []
+        
+        with sync_playwright() as p:
+            # Launch headless browser
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            page = context.new_page()
+            
+            if progress_callback:
+                progress_callback(0.1, "Loading page...")
+            
+            # Navigate to URL
+            page.goto(url, wait_until="networkidle", timeout=60000)
+            
+            # Wait for images to load
+            time.sleep(2)
+            
+            # Scroll down to trigger lazy loading
+            if progress_callback:
+                progress_callback(0.2, "Scrolling to load all images...")
+            
+            # Get page height and scroll incrementally
+            prev_height = 0
+            scroll_attempts = 0
+            while scroll_attempts < 30:  # Max 30 scroll attempts
+                page.evaluate("window.scrollBy(0, 800)")
+                time.sleep(0.3)
+                current_height = page.evaluate("document.documentElement.scrollHeight")
+                if current_height == prev_height:
+                    scroll_attempts += 1
+                    if scroll_attempts > 3:
+                        break
+                else:
+                    scroll_attempts = 0
+                prev_height = current_height
+            
+            # Scroll back to top
+            page.evaluate("window.scrollTo(0, 0)")
+            time.sleep(0.5)
+            
+            if progress_callback:
+                progress_callback(0.3, "Finding manga images...")
+            
+            # Find all images with various selectors
+            img_elements = page.query_selector_all("img")
+            
+            # Collect image URLs
+            img_urls = []
+            for img in img_elements:
+                try:
+                    src = img.get_attribute("src") or img.get_attribute("data-src") or img.get_attribute("data-lazy-src") or ""
+                    if not src or src.startswith("data:"):
+                        continue
+                    
+                    # Get natural dimensions
+                    natural_width = img.evaluate("el => el.naturalWidth") or 0
+                    natural_height = img.evaluate("el => el.naturalHeight") or 0
+                    
+                    # Filter out small images
+                    if natural_width > 200 and natural_height > 200:
+                        # Check if it's likely a manga page (taller than wide, or large)
+                        if natural_height > natural_width * 0.5 or (natural_width > 400 and natural_height > 400):
+                            img_urls.append({
+                                "src": src,
+                                "width": natural_width,
+                                "height": natural_height,
+                            })
+                except:
+                    continue
+            
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_imgs = []
+            for img in img_urls:
+                if img["src"] not in seen:
+                    seen.add(img["src"])
+                    unique_imgs.append(img)
+            
+            if not unique_imgs:
+                browser.close()
+                raise ValueError("No manga images found. The site may have anti-scraping protection.")
+            
+            if progress_callback:
+                progress_callback(0.4, f"Found {len(unique_imgs)} images, downloading...")
+            
+            # Download each image
+            for i, img_info in enumerate(unique_imgs):
+                try:
+                    src = img_info["src"]
+                    
+                    # Make absolute URL if needed
+                    if src.startswith("//"):
+                        src = "https:" + src
+                    elif src.startswith("/"):
+                        base = page.url.split("/")[0:3]
+                        src = "/".join(base) + src
+                    
+                    # Download using the browser context (handles cookies, etc.)
+                    response = page.request.get(src)
+                    
+                    if response.ok:
+                        img_data = response.body()
+                        pil_img = Image.open(io.BytesIO(img_data))
+                        
+                        # Convert to RGB
+                        if pil_img.mode in ('RGBA', 'LA', 'P'):
+                            background = Image.new('RGB', pil_img.size, (255, 255, 255))
+                            if pil_img.mode == 'P':
+                                pil_img = pil_img.convert('RGBA')
+                            if pil_img.mode == 'RGBA':
+                                background.paste(pil_img, mask=pil_img.split()[-1])
+                            else:
+                                background.paste(pil_img)
+                            pil_img = background
+                        elif pil_img.mode != 'RGB':
+                            pil_img = pil_img.convert('RGB')
+                        
+                        images.append(pil_img)
+                    
+                    if progress_callback:
+                        progress = 0.4 + (0.5 * (i + 1) / len(unique_imgs))
+                        progress_callback(progress, f"Downloaded {i + 1}/{len(unique_imgs)} images")
+                        
+                except Exception as e:
+                    st.warning(f"Failed to download image {i + 1}: {e}")
+                    continue
+            
+            browser.close()
+        
+        if not images:
+            raise ValueError("Failed to download any images.")
+        
+        # Sort images by height (manga pages are usually consistently sized)
+        # This helps filter out any remaining non-manga images
+        if len(images) > 3:
+            avg_height = sum(img.height for img in images) / len(images)
+            images = [img for img in images if img.height > avg_height * 0.5]
+        
+        return images
+    
+    def extract_chapter_info(url: str) -> tuple[str, str]:
+        """Try to extract manga title and chapter number from URL."""
+        patterns = [
+            r"/title/([^/]+)/chapter/([^/]+)",
+            r"/manga/([^/]+)/chapter[/-]?(\d+)",
+            r"/read/([^/]+)/chapter[/-]?(\d+)",
+            r"/([^/]+)/chapter[/-]?(\d+)",
+            r"/chapter[/-]?(\d+)",
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, url, re.IGNORECASE)
+            if match:
+                groups = match.groups()
+                if len(groups) >= 2:
+                    title = groups[0].replace("-", " ").replace("_", " ").title()
+                    chapter = groups[1]
+                    return title, chapter
+                elif len(groups) == 1:
+                    return "Manga", groups[0]
+        
+        return "Manga", "Chapter"
+    
+    # UI
+    url = st.text_input(
+        "🔗 Manga Chapter URL",
+        placeholder="https://example.com/manga/title/chapter/1",
+        help="Paste the URL of a manga chapter page",
+    )
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        quality = st.slider(
+            "JPEG Quality",
+            min_value=50,
+            max_value=95,
+            value=80,
+            step=5,
+            help="Higher = better quality but larger file",
+            key="webmanga_quality",
+        )
+    with col2:
+        max_dimension = st.slider(
+            "Max Image Size",
+            min_value=1000,
+            max_value=2400,
+            value=1600,
+            step=100,
+            help="Maximum width/height of images",
+            key="webmanga_maxdim",
+        )
+    
+    if url:
+        title, chapter = extract_chapter_info(url)
+        default_filename = f"{title} - Chapter {chapter}.pdf"
+        
+        filename = st.text_input("📁 Output filename", value=default_filename)
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
+        
+        if st.button("📥 Download & Create PDF", type="primary", use_container_width=True):
+            progress_bar = st.progress(0, text="Starting...")
+            status_text = st.empty()
+            
+            def update_progress(progress, text):
+                progress_bar.progress(progress, text=text)
+                status_text.text(text)
+            
+            try:
+                images = extract_images_with_browser(url, update_progress)
+                
+                update_progress(0.9, f"Creating PDF with {len(images)} pages...")
+                
+                service = PDFService()
+                pdf_bytes = service.create_pdf_from_images(
+                    images,
+                    quality=quality,
+                    max_dimension=max_dimension,
+                )
+                
+                update_progress(1.0, "Done!")
+                
+                pdf_size_mb = len(pdf_bytes) / (1024 * 1024)
+                st.success(f"✅ Successfully created PDF with {len(images)} pages ({pdf_size_mb:.1f} MB)")
+                
+                with st.expander("📖 Preview first page"):
+                    st.image(images[0], width=300)
+                
+                st.download_button(
+                    label="📥 Download PDF",
+                    data=pdf_bytes,
+                    file_name=filename,
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True,
+                )
+                
+            except Exception as e:
+                st.error(f"❌ Error: {e}")
+                st.exception(e)
+    
+    st.divider()
+    st.caption("""
+    **Note:** This tool uses a headless browser to load JavaScript-rendered pages.
+    It may take a moment to start. Please respect copyright laws.
+    """)
+
+with tab4:
     st.info("More tools coming soon!")
