@@ -720,6 +720,20 @@ def render_sidebar():
     
     st.sidebar.divider()
     
+    # Check if we have any processed pages to download
+    has_results = False
+    if "pages_data" in st.session_state:
+        for page_data in st.session_state.pages_data.values():
+            if page_data.get("result"):
+                has_results = True
+                break
+    
+    if has_results:
+        if st.sidebar.button("📥 Download PDF", type="primary", use_container_width=True):
+            st.session_state.show_download_dialog = True
+            st.rerun()
+        st.sidebar.divider()
+    
     st.sidebar.info(
         "**Note:** Enter your OpenAI API key above to use GPT-4o-mini for translation. "
         "Use 'dummy' provider for testing without an API key."
