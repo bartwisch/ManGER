@@ -572,6 +572,28 @@ h3 {
     margin: 0.25rem 0 !important;
     padding: 0.5rem !important;
 }
+
+/* Style file uploader button as primary (red) */
+[data-testid="stFileUploader"] button {
+    background-color: rgb(255, 75, 75) !important;
+    color: white !important;
+    border: none !important;
+}
+
+[data-testid="stFileUploader"] button:hover {
+    background-color: rgb(255, 100, 100) !important;
+}
+
+/* Align columns to bottom for manga options */
+[data-testid="stHorizontalBlock"]:has([data-testid="stFileUploader"]) {
+    align-items: flex-end !important;
+}
+
+[data-testid="stHorizontalBlock"]:has([data-testid="stFileUploader"]) > [data-testid="column"] {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1576,14 +1598,7 @@ def main():
     with col2:
         st.link_button("🛠️ Tools", "/Tools", use_container_width=True)
     
-    st.markdown(
-        "Upload a PDF manga to detect and translate text. "
-        "Select the pages you want to translate."
-    )
-    
-    # Hint for users without a PDF
-    st.caption("💡 No PDF?")
-    st.page_link("pages/WebManga.py", label="🌐 Scrape Web Manga")
+    st.markdown("Detect and translate text in manga. Select pages and start translating.")
     
     # Sidebar settings
     settings = render_sidebar()
@@ -1594,14 +1609,24 @@ def main():
     # Update PDF service DPI
     st.session_state.pdf_service.dpi = settings["render_dpi"]
     
-    # File upload
-    st.subheader("📤 Upload Manga PDF")
+    # Two options: Scrape or Upload
+    st.subheader("📥 Get Your Manga")
     
-    uploaded_file = st.file_uploader(
-        "Choose a PDF file",
-        type=["pdf"],
-        help="Upload a manga PDF file",
-    )
+    col_scrape, col_or, col_upload = st.columns([2, 1, 2])
+    with col_scrape:
+        if st.button("🌐 Scrape Web Manga", use_container_width=True, type="primary"):
+            st.switch_page("pages/WebManga.py")
+        st.caption("Download from manga websites")
+    with col_or:
+        st.markdown("<div style='text-align: center; padding-top: 0.5rem; color: #888;'>OR</div>", unsafe_allow_html=True)
+    with col_upload:
+        uploaded_file = st.file_uploader(
+            "📄 Upload PDF",
+            type=["pdf"],
+            help="Upload a manga PDF file",
+            label_visibility="collapsed",
+        )
+        st.caption("Upload a manga PDF file")
     
     if uploaded_file and not st.session_state.pdf_loaded:
         with st.spinner("Loading PDF..."):

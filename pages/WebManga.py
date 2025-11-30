@@ -15,7 +15,13 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("🌐 Web Manga to PDF")
+col1, col2 = st.columns([4, 1])
+with col1:
+    st.title("🌐 Web Manga to PDF")
+with col2:
+    if st.button("📖 Back to Translator", use_container_width=True):
+        st.switch_page("app.py")
+
 st.markdown("""
 Download manga chapters from websites and convert them to PDF.
 
