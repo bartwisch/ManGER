@@ -214,6 +214,13 @@ filename = st.text_input("📁 Output filename", value=default_filename)
 if not filename.endswith(".pdf"):
     filename += ".pdf"
 
+# Auto-translate option
+auto_translate = st.checkbox(
+    "🔄 Auto-translate after scraping",
+    value=False,
+    help="Automatically load the PDF into the translator and translate all pages",
+)
+
 # Button always visible, disabled if no URL
 if st.button("📥 Download & Create PDF", type="primary", use_container_width=True, disabled=not url):
     progress_bar = st.progress(0, text="Starting...")
@@ -247,14 +254,22 @@ if st.button("📥 Download & Create PDF", type="primary", use_container_width=T
         
         st.success(f"✅ PDF created: {pdf_size_mb:.1f} MB (compressed from {raw_size_mb:.1f} MB, -{reduction:.0f}%)")
         
-        st.download_button(
-            label="📥 Download PDF",
-            data=pdf_bytes,
-            file_name=filename,
-            mime="application/pdf",
-            type="primary",
-            use_container_width=True,
-        )
+        if auto_translate:
+            # Store PDF in session state for translator
+            st.session_state.scraped_pdf_bytes = pdf_bytes
+            st.session_state.scraped_pdf_filename = filename
+            st.session_state.auto_translate_scraped = True
+            st.info("🔄 Redirecting to translator...")
+            st.switch_page("app.py")
+        else:
+            st.download_button(
+                label="📥 Download PDF",
+                data=pdf_bytes,
+                file_name=filename,
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+            )
         
     except Exception as e:
         progress_bar.empty()

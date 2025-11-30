@@ -1628,6 +1628,41 @@ def main():
         )
         st.caption("Upload a manga PDF file")
     
+    # Check for scraped PDF from WebManga tool
+    scraped_pdf_bytes = st.session_state.pop("scraped_pdf_bytes", None)
+    scraped_pdf_filename = st.session_state.pop("scraped_pdf_filename", None)
+    auto_translate_scraped = st.session_state.pop("auto_translate_scraped", False)
+    
+    # Load scraped PDF if available
+    if scraped_pdf_bytes and not st.session_state.pdf_loaded:
+        with st.spinner("Loading scraped PDF..."):
+            try:
+                st.session_state.original_filename = scraped_pdf_filename or "scraped_manga.pdf"
+                page_count = st.session_state.pdf_service.load_from_bytes(scraped_pdf_bytes)
+                st.session_state.pdf_loaded = True
+                st.session_state.pdf_page_count = page_count
+                
+                # Select all pages by default
+                st.session_state.selected_pages = list(range(page_count))
+                for i in range(page_count):
+                    st.session_state[f"page_select_{i}"] = True
+                
+                # Generate thumbnails
+                with st.spinner("Generating page previews..."):
+                    thumbnails = st.session_state.pdf_service.get_all_thumbnails(max_size=(120, 120))
+                    st.session_state.page_thumbnails = thumbnails
+                
+                st.success(f"Loaded scraped PDF with {page_count} pages!")
+                
+                # Auto-start translation if requested
+                if auto_translate_scraped:
+                    st.session_state.start_auto_translate = True
+                
+                st.rerun()
+                
+            except PDFError as e:
+                st.error(f"Failed to load scraped PDF: {e}")
+    
     if uploaded_file and not st.session_state.pdf_loaded:
         with st.spinner("Loading PDF..."):
             try:
@@ -1678,18 +1713,27 @@ def main():
         needs_api_key = provider == "openai" and not api_key
         has_pages = len(st.session_state.selected_pages) > 0
         
-        page_count = len(st.session_state.selected_pages)
-        button_label = f"▶️ Start All Selected Pages ({page_count} pages)" if has_pages else "▶️ Start (Select pages first)"
+        # Check for auto-translate trigger from WebManga scraper
+        auto_translate_now = st.session_state.pop("start_auto_translate", False)
         
-        if st.button(
-            button_label,
-            key="start_all_top",
-            type="primary",
-            use_container_width=True,
-            disabled=needs_api_key or not has_pages,
-            on_click=dismiss_download_dialog,
-        ):
+        page_count = len(st.session_state.selected_pages)
+        
+        # If auto-translating, show info instead of clickable button
+        if auto_translate_now and has_pages and not needs_api_key:
+            st.info(f"🔄 Auto-translating {page_count} pages...")
             _process_all_selected_pages(settings)
+        else:
+            button_label = f"▶️ Start All Selected Pages ({page_count} pages)" if has_pages else "▶️ Start (Select pages first)"
+            
+            if st.button(
+                button_label,
+                key="start_all_top",
+                type="primary",
+                use_container_width=True,
+                disabled=needs_api_key or not has_pages,
+                on_click=dismiss_download_dialog,
+            ):
+                _process_all_selected_pages(settings)
         
         if needs_api_key:
             st.caption("⚠️ Enter OpenAI API key in sidebar or use 'dummy' provider")
