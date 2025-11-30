@@ -333,6 +333,59 @@ class PDFService:
         except Exception as e:
             raise PDFError(f"Failed to create PDF: {e}") from e
 
+    def merge_pdfs(self, pdf_files: list[bytes]) -> bytes:
+        """Merge multiple PDF files into one.
+        
+        Args:
+            pdf_files: List of PDF file contents as bytes
+            
+        Returns:
+            Merged PDF content as bytes
+        """
+        if not pdf_files:
+            raise PDFError("No PDF files provided")
+            
+        try:
+            # Create a new empty PDF
+            merged_doc = fitz.open()
+            
+            for pdf_bytes in pdf_files:
+                # Open each PDF from bytes
+                with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+                    merged_doc.insert_pdf(doc)
+            
+            # Return merged PDF as bytes
+            return merged_doc.tobytes()
+            
+        except Exception as e:
+            raise PDFError(f"Failed to merge PDFs: {e}") from e
+        finally:
+            if 'merged_doc' in locals():
+                merged_doc.close()
+
+    def compress_pdf(self, pdf_bytes: bytes) -> bytes:
+        """Compress a PDF file.
+        
+        Args:
+            pdf_bytes: PDF file content as bytes
+            
+        Returns:
+            Compressed PDF content as bytes
+        """
+        if not pdf_bytes:
+            raise PDFError("No PDF content provided")
+            
+        try:
+            # Open PDF from bytes
+            with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+                # Save with compression options
+                # garbage=4: remove unused objects, compact xref, merge duplicate objects
+                # deflate=True: compress streams
+                return doc.tobytes(garbage=4, deflate=True)
+                
+        except Exception as e:
+            raise PDFError(f"Failed to compress PDF: {e}") from e
+
     def __enter__(self) -> PDFService:
         """Context manager entry."""
         return self
