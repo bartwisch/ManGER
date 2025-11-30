@@ -916,9 +916,11 @@ def render_text_blocks(blocks: list[TextBlock], page_num: int = 0):
     # Display as dataframe
     st.dataframe(
         data,
+        width=None,  # Use default width behavior
         use_container_width=True,
         hide_index=True,
     )
+
 
 
 def render_page_selector():
@@ -1027,7 +1029,7 @@ def render_page_selector():
                         x_offset = 0
                     canvas.paste(thumb_display, (max(0, x_offset), max(0, y_offset)))
                     
-                    st.image(canvas, use_container_width=True)
+                    st.image(canvas, width="stretch")
                     
                     # Checkbox for selection - use callback to update selected_pages
                     checkbox_key = f"page_select_{page_num}"
@@ -1164,7 +1166,7 @@ def render_page_viewer():
         # If blocks detected, show image with bounding boxes
         if page_data["blocks"]:
             img_with_boxes = draw_text_boxes(page_data["image"], page_data["blocks"], show_polygons=show_polygons)
-            st.image(img_with_boxes, use_container_width=True)
+            st.image(img_with_boxes, width="stretch")
             groups = group_text_blocks(page_data["blocks"])
             num_groups = len(groups)
             caption = "🔴 Red = detected, 🟢 Green = translated, 🔵 Blue = grouped"
@@ -1173,12 +1175,12 @@ def render_page_viewer():
             caption += f" ({len(page_data['blocks'])} blocks, {num_groups} groups)"
             st.caption(caption)
         else:
-            st.image(page_data["image"], use_container_width=True)
+            st.image(page_data["image"], width="stretch")
     
     with col2:
         st.write("**Translated**")
         if page_data["result"]:
-            st.image(page_data["result"], use_container_width=True)
+            st.image(page_data["result"], width="stretch")
         else:
             st.info("Process page to see translation")
     
