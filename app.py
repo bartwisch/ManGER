@@ -1581,6 +1581,10 @@ def main():
         "Select the pages you want to translate."
     )
     
+    # Hint for users without a PDF
+    st.caption("💡 No PDF?")
+    st.page_link("pages/WebManga.py", label="🌐 Scrape Web Manga")
+    
     # Sidebar settings
     settings = render_sidebar()
     
