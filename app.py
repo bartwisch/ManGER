@@ -559,6 +559,13 @@ def init_session_state():
         st.session_state.original_filename = "manga.pdf"
 
 
+def dismiss_download_dialog():
+    """Dismiss the download dialog if open."""
+    if st.session_state.get("show_download_dialog", False):
+        st.session_state.show_download_dialog = False
+
+
+
 def get_pipeline(settings: dict | None = None) -> MangaPipeline:
     """Get or create the pipeline instance.
     
@@ -916,8 +923,7 @@ def render_text_blocks(blocks: list[TextBlock], page_num: int = 0):
     # Display as dataframe
     st.dataframe(
         data,
-        width=None,  # Use default width behavior
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -946,28 +952,28 @@ def render_page_selector():
     # Quick selection buttons
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        if st.button("Select All", use_container_width=True):
+        if st.button("Select All", use_container_width=True, on_click=dismiss_download_dialog):
             st.session_state.selected_pages = list(range(page_count))
             # Update checkbox states
             for i in range(page_count):
                 st.session_state[f"page_select_{i}"] = True
             st.rerun()
     with col2:
-        if st.button("Clear Selection", use_container_width=True):
+        if st.button("Clear Selection", use_container_width=True, on_click=dismiss_download_dialog):
             st.session_state.selected_pages = []
             # Update checkbox states
             for i in range(page_count):
                 st.session_state[f"page_select_{i}"] = False
             st.rerun()
     with col3:
-        if st.button("Select Odd Pages", use_container_width=True):
+        if st.button("Select Odd Pages", use_container_width=True, on_click=dismiss_download_dialog):
             st.session_state.selected_pages = list(range(0, page_count, 2))
             # Update checkbox states
             for i in range(page_count):
                 st.session_state[f"page_select_{i}"] = (i % 2 == 0)
             st.rerun()
     with col4:
-        if st.button("Select Even Pages", use_container_width=True):
+        if st.button("Select Even Pages", use_container_width=True, on_click=dismiss_download_dialog):
             st.session_state.selected_pages = list(range(1, page_count, 2))
             # Update checkbox states
             for i in range(page_count):
@@ -989,6 +995,7 @@ def render_page_selector():
         type="primary",
         use_container_width=True,
         disabled=needs_api_key or no_pages_selected,
+        on_click=dismiss_download_dialog,
     ):
         _process_all_selected_pages(settings)
     
@@ -1041,6 +1048,7 @@ def render_page_selector():
                     st.checkbox(
                         f"{page_num + 1}",
                         key=checkbox_key,
+                        on_change=dismiss_download_dialog,
                     )
 
 
@@ -1065,12 +1073,12 @@ def render_page_viewer():
     nav_col1, nav_col2, nav_col3, nav_col4, nav_col5 = st.columns([1, 1, 2, 1, 1])
     
     with nav_col1:
-        if st.button("⏮️ First", disabled=current_idx == 0, use_container_width=True):
+        if st.button("⏮️ First", disabled=current_idx == 0, use_container_width=True, on_click=dismiss_download_dialog):
             st.session_state.current_page_idx = 0
             st.rerun()
     
     with nav_col2:
-        if st.button("◀️ Prev", disabled=current_idx == 0, use_container_width=True):
+        if st.button("◀️ Prev", disabled=current_idx == 0, use_container_width=True, on_click=dismiss_download_dialog):
             st.session_state.current_page_idx = current_idx - 1
             st.rerun()
     
@@ -1078,12 +1086,12 @@ def render_page_viewer():
         st.write(f"Page {current_idx + 1} of {len(selected)} selected")
     
     with nav_col4:
-        if st.button("Next ▶️", disabled=current_idx >= len(selected) - 1, use_container_width=True):
+        if st.button("Next ▶️", disabled=current_idx >= len(selected) - 1, use_container_width=True, on_click=dismiss_download_dialog):
             st.session_state.current_page_idx = current_idx + 1
             st.rerun()
     
     with nav_col5:
-        if st.button("Last ⏭️", disabled=current_idx >= len(selected) - 1, use_container_width=True):
+        if st.button("Last ⏭️", disabled=current_idx >= len(selected) - 1, use_container_width=True, on_click=dismiss_download_dialog):
             st.session_state.current_page_idx = len(selected) - 1
             st.rerun()
     
@@ -1471,7 +1479,7 @@ def main():
     
     # Reset button
     if st.session_state.pdf_loaded:
-        if st.button("🔄 Load New PDF"):
+        if st.button("🔄 Load New PDF", on_click=dismiss_download_dialog):
             st.session_state.pdf_service.close()
             st.session_state.pdf_loaded = False
             st.session_state.pdf_page_count = 0
@@ -1497,11 +1505,25 @@ def main():
             type="primary",
             use_container_width=True,
             disabled=needs_api_key or not has_pages,
+            on_click=dismiss_download_dialog,
         ):
             _process_all_selected_pages(settings)
         
         if needs_api_key:
             st.caption("⚠️ Enter OpenAI API key in sidebar or use 'dummy' provider")
+        
+        # Check if we have any processed pages to download (Top Button)
+        has_results = False
+        if "pages_data" in st.session_state:
+            for page_data in st.session_state.pages_data.values():
+                if page_data.get("result"):
+                    has_results = True
+                    break
+        
+        if has_results:
+            if st.button("📥 Download Translated PDF", key="download_top", type="secondary", use_container_width=True):
+                st.session_state.show_download_dialog = True
+                st.rerun()
     
     # Page selection
     if st.session_state.pdf_loaded:
@@ -1540,6 +1562,19 @@ def main():
                 col2.metric("Pages Failed", failed)
                 col3.metric("Total Text Blocks", total_blocks)
     
+    # Bottom Download Button
+    has_results_bottom = False
+    if "pages_data" in st.session_state:
+        for page_data in st.session_state.pages_data.values():
+            if page_data.get("result"):
+                has_results_bottom = True
+                break
+    
+    if has_results_bottom:
+        if st.button("📥 Download Translated PDF", key="download_bottom", type="primary", use_container_width=True):
+            st.session_state.show_download_dialog = True
+            st.rerun()
+
     # Footer
     st.divider()
     st.caption(
