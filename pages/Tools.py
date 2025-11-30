@@ -230,158 +230,109 @@ with tab3:
     st.markdown("""
     Download manga chapters from websites and convert them to PDF.
     
-    **✨ Now with JavaScript support!** Uses a real browser to load pages.
+    **✨ Uses a real browser** to load JavaScript-rendered pages and print to PDF.
     """)
     
-    def extract_images_with_browser(url: str, progress_callback=None) -> list[Image.Image]:
-        """Extract manga images using Playwright browser."""
+    def download_page_as_pdf(url: str, progress_callback=None) -> bytes:
+        """Load a webpage and print it as PDF using Playwright."""
         from playwright.sync_api import sync_playwright
         
         if progress_callback:
-            progress_callback(0.05, "Starting browser...")
-        
-        images = []
+            progress_callback(0.1, "Starting browser...")
         
         with sync_playwright() as p:
             # Launch headless browser
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
-                viewport={"width": 1920, "height": 1080},
+                viewport={"width": 1200, "height": 800},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
             page = context.new_page()
             
             if progress_callback:
-                progress_callback(0.1, "Loading page...")
+                progress_callback(0.2, "Loading page...")
             
             # Navigate to URL
             page.goto(url, wait_until="networkidle", timeout=60000)
             
-            # Wait for images to load
+            # Wait for initial content
             time.sleep(2)
             
-            # Scroll down to trigger lazy loading
             if progress_callback:
-                progress_callback(0.2, "Scrolling to load all images...")
+                progress_callback(0.4, "Scrolling to load all images...")
             
-            # Get page height and scroll incrementally
-            prev_height = 0
-            scroll_attempts = 0
-            while scroll_attempts < 30:  # Max 30 scroll attempts
-                page.evaluate("window.scrollBy(0, 800)")
-                time.sleep(0.3)
-                current_height = page.evaluate("document.documentElement.scrollHeight")
-                if current_height == prev_height:
-                    scroll_attempts += 1
-                    if scroll_attempts > 3:
-                        break
-                else:
-                    scroll_attempts = 0
-                prev_height = current_height
+            # Scroll to bottom to trigger lazy loading
+            page.evaluate("""
+                async () => {
+                    await new Promise((resolve) => {
+                        let totalHeight = 0;
+                        const distance = 500;
+                        const timer = setInterval(() => {
+                            window.scrollBy(0, distance);
+                            totalHeight += distance;
+                            if (totalHeight >= document.body.scrollHeight) {
+                                clearInterval(timer);
+                                resolve();
+                            }
+                        }, 100);
+                        // Timeout after 10 seconds
+                        setTimeout(() => { clearInterval(timer); resolve(); }, 10000);
+                    });
+                }
+            """)
+            
+            # Wait for images to load after scrolling
+            time.sleep(2)
             
             # Scroll back to top
             page.evaluate("window.scrollTo(0, 0)")
             time.sleep(0.5)
             
             if progress_callback:
-                progress_callback(0.3, "Finding manga images...")
+                progress_callback(0.6, "Hiding non-essential elements...")
             
-            # Find all images with various selectors
-            img_elements = page.query_selector_all("img")
-            
-            # Collect image URLs
-            img_urls = []
-            for img in img_elements:
-                try:
-                    src = img.get_attribute("src") or img.get_attribute("data-src") or img.get_attribute("data-lazy-src") or ""
-                    if not src or src.startswith("data:"):
-                        continue
-                    
-                    # Get natural dimensions
-                    natural_width = img.evaluate("el => el.naturalWidth") or 0
-                    natural_height = img.evaluate("el => el.naturalHeight") or 0
-                    
-                    # Filter out small images
-                    if natural_width > 200 and natural_height > 200:
-                        # Check if it's likely a manga page (taller than wide, or large)
-                        if natural_height > natural_width * 0.5 or (natural_width > 400 and natural_height > 400):
-                            img_urls.append({
-                                "src": src,
-                                "width": natural_width,
-                                "height": natural_height,
-                            })
-                except:
-                    continue
-            
-            # Remove duplicates while preserving order
-            seen = set()
-            unique_imgs = []
-            for img in img_urls:
-                if img["src"] not in seen:
-                    seen.add(img["src"])
-                    unique_imgs.append(img)
-            
-            if not unique_imgs:
-                browser.close()
-                raise ValueError("No manga images found. The site may have anti-scraping protection.")
+            # Try to hide common non-content elements (headers, footers, ads, navigation)
+            page.evaluate("""
+                () => {
+                    const selectorsToHide = [
+                        'header', 'footer', 'nav', '.navbar', '.nav',
+                        '.header', '.footer', '.sidebar', '.ad', '.ads',
+                        '.advertisement', '[class*="banner"]', '[class*="popup"]',
+                        '[class*="modal"]', '[class*="cookie"]', '[class*="consent"]',
+                        '.social-share', '.comments', '#comments', '.related',
+                        '[class*="recommend"]', '.navigation', '.breadcrumb'
+                    ];
+                    selectorsToHide.forEach(selector => {
+                        document.querySelectorAll(selector).forEach(el => {
+                            el.style.display = 'none';
+                        });
+                    });
+                    // Also remove fixed/sticky positioning that might cause issues
+                    document.querySelectorAll('*').forEach(el => {
+                        const style = window.getComputedStyle(el);
+                        if (style.position === 'fixed' || style.position === 'sticky') {
+                            el.style.position = 'relative';
+                        }
+                    });
+                }
+            """)
             
             if progress_callback:
-                progress_callback(0.4, f"Found {len(unique_imgs)} images, downloading...")
+                progress_callback(0.8, "Generating PDF...")
             
-            # Download each image
-            for i, img_info in enumerate(unique_imgs):
-                try:
-                    src = img_info["src"]
-                    
-                    # Make absolute URL if needed
-                    if src.startswith("//"):
-                        src = "https:" + src
-                    elif src.startswith("/"):
-                        base = page.url.split("/")[0:3]
-                        src = "/".join(base) + src
-                    
-                    # Download using the browser context (handles cookies, etc.)
-                    response = page.request.get(src)
-                    
-                    if response.ok:
-                        img_data = response.body()
-                        pil_img = Image.open(io.BytesIO(img_data))
-                        
-                        # Convert to RGB
-                        if pil_img.mode in ('RGBA', 'LA', 'P'):
-                            background = Image.new('RGB', pil_img.size, (255, 255, 255))
-                            if pil_img.mode == 'P':
-                                pil_img = pil_img.convert('RGBA')
-                            if pil_img.mode == 'RGBA':
-                                background.paste(pil_img, mask=pil_img.split()[-1])
-                            else:
-                                background.paste(pil_img)
-                            pil_img = background
-                        elif pil_img.mode != 'RGB':
-                            pil_img = pil_img.convert('RGB')
-                        
-                        images.append(pil_img)
-                    
-                    if progress_callback:
-                        progress = 0.4 + (0.5 * (i + 1) / len(unique_imgs))
-                        progress_callback(progress, f"Downloaded {i + 1}/{len(unique_imgs)} images")
-                        
-                except Exception as e:
-                    st.warning(f"Failed to download image {i + 1}: {e}")
-                    continue
+            # Print to PDF
+            pdf_bytes = page.pdf(
+                format="A4",
+                print_background=True,
+                margin={"top": "10mm", "bottom": "10mm", "left": "5mm", "right": "5mm"},
+            )
             
             browser.close()
-        
-        if not images:
-            raise ValueError("Failed to download any images.")
-        
-        # Sort images by height (manga pages are usually consistently sized)
-        # This helps filter out any remaining non-manga images
-        if len(images) > 3:
-            avg_height = sum(img.height for img in images) / len(images)
-            images = [img for img in images if img.height > avg_height * 0.5]
-        
-        return images
+            
+            if progress_callback:
+                progress_callback(1.0, "Done!")
+            
+            return pdf_bytes
     
     def extract_chapter_info(url: str) -> tuple[str, str]:
         """Try to extract manga title and chapter number from URL."""
@@ -413,81 +364,89 @@ with tab3:
         help="Paste the URL of a manga chapter page",
     )
     
+    # Compression settings
+    st.subheader("⚙️ Compression Settings")
     col1, col2 = st.columns(2)
     with col1:
         quality = st.slider(
             "JPEG Quality",
-            min_value=50,
-            max_value=95,
-            value=80,
+            min_value=40,
+            max_value=90,
+            value=70,
             step=5,
-            help="Higher = better quality but larger file",
+            help="Lower = smaller file. 60-70 is usually good for manga.",
             key="webmanga_quality",
         )
     with col2:
         max_dimension = st.slider(
-            "Max Image Size",
-            min_value=1000,
-            max_value=2400,
-            value=1600,
+            "Max Image Size (px)",
+            min_value=800,
+            max_value=2000,
+            value=1400,
             step=100,
-            help="Maximum width/height of images",
+            help="Maximum width/height. 1200-1400 is readable.",
             key="webmanga_maxdim",
         )
     
+    # Always show filename input and button
     if url:
         title, chapter = extract_chapter_info(url)
         default_filename = f"{title} - Chapter {chapter}.pdf"
+    else:
+        default_filename = "manga_chapter.pdf"
+    
+    filename = st.text_input("📁 Output filename", value=default_filename)
+    if not filename.endswith(".pdf"):
+        filename += ".pdf"
+    
+    # Button always visible, disabled if no URL
+    if st.button("📥 Download & Create PDF", type="primary", use_container_width=True, disabled=not url):
+        progress_bar = st.progress(0, text="Starting...")
         
-        filename = st.text_input("📁 Output filename", value=default_filename)
-        if not filename.endswith(".pdf"):
-            filename += ".pdf"
+        def update_progress(progress, text):
+            progress_bar.progress(min(progress, 0.99), text=text)
         
-        if st.button("📥 Download & Create PDF", type="primary", use_container_width=True):
-            progress_bar = st.progress(0, text="Starting...")
-            status_text = st.empty()
+        try:
+            # Step 1: Download page as PDF
+            raw_pdf_bytes = download_page_as_pdf(url, update_progress)
+            raw_size_mb = len(raw_pdf_bytes) / (1024 * 1024)
             
-            def update_progress(progress, text):
-                progress_bar.progress(progress, text=text)
-                status_text.text(text)
+            # Step 2: Compress the PDF using our shrinker
+            update_progress(0.85, f"Compressing PDF ({raw_size_mb:.1f} MB)...")
             
-            try:
-                images = extract_images_with_browser(url, update_progress)
-                
-                update_progress(0.9, f"Creating PDF with {len(images)} pages...")
-                
-                service = PDFService()
-                pdf_bytes = service.create_pdf_from_images(
-                    images,
-                    quality=quality,
-                    max_dimension=max_dimension,
-                )
-                
-                update_progress(1.0, "Done!")
-                
-                pdf_size_mb = len(pdf_bytes) / (1024 * 1024)
-                st.success(f"✅ Successfully created PDF with {len(images)} pages ({pdf_size_mb:.1f} MB)")
-                
-                with st.expander("📖 Preview first page"):
-                    st.image(images[0], width=300)
-                
-                st.download_button(
-                    label="📥 Download PDF",
-                    data=pdf_bytes,
-                    file_name=filename,
-                    mime="application/pdf",
-                    type="primary",
-                    use_container_width=True,
-                )
-                
-            except Exception as e:
-                st.error(f"❌ Error: {e}")
-                st.exception(e)
+            service = PDFService()
+            pdf_bytes = service.shrink_pdf(
+                raw_pdf_bytes,
+                quality=quality,
+                max_dimension=max_dimension,
+            )
+            
+            # Clear progress bar
+            progress_bar.empty()
+            
+            pdf_size_mb = len(pdf_bytes) / (1024 * 1024)
+            reduction = (1 - pdf_size_mb / raw_size_mb) * 100 if raw_size_mb > 0 else 0
+            
+            st.success(f"✅ PDF created: {pdf_size_mb:.1f} MB (compressed from {raw_size_mb:.1f} MB, -{reduction:.0f}%)")
+            
+            st.download_button(
+                label="📥 Download PDF",
+                data=pdf_bytes,
+                file_name=filename,
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+            )
+            
+        except Exception as e:
+            progress_bar.empty()
+            st.error(f"❌ Error: {e}")
+            st.exception(e)
     
     st.divider()
     st.caption("""
-    **Note:** This tool uses a headless browser to load JavaScript-rendered pages.
-    It may take a moment to start. Please respect copyright laws.
+    **Note:** This tool uses a headless browser to print the page as PDF.
+    Headers, footers, and ads are automatically hidden. Please respect copyright laws.
     """)
 
 with tab4:
