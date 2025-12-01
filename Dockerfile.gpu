@@ -1,0 +1,49 @@
+# GPU-enabled Dockerfile for RunPod
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+
+WORKDIR /app
+
+# Install system dependencies and fonts
+RUN apt-get update && apt-get install -y \
+    libgl1 \
+    libglib2.0-0 \
+    fonts-dejavu-core \
+    fonts-liberation \
+    fontconfig \
+    && rm -rf /var/lib/apt/lists/* \
+    && fc-cache -f -v
+
+# Copy project files
+COPY pyproject.toml .
+COPY src/ src/
+COPY app.py .
+COPY pages/ pages/
+
+# Install dependencies (skip torch since it's in base image)
+RUN pip install --no-cache-dir \
+    pydantic>=2.0.0 \
+    pydantic-settings>=2.0.0 \
+    pillow>=10.0.0 \
+    opencv-python>=4.8.0 \
+    numpy>=1.24.0 \
+    streamlit>=1.28.0 \
+    loguru>=0.7.0 \
+    openai>=1.0.0 \
+    httpx>=0.25.0 \
+    pymupdf>=1.23.0 \
+    beautifulsoup4>=4.12.0 \
+    requests>=2.31.0 \
+    transformers>=4.35.0 \
+    einops>=0.7.0 \
+    shapely>=2.0.0 \
+    matplotlib>=3.7.0 \
+    timm>=0.9.0
+
+# Install the package itself
+RUN pip install --no-cache-dir -e .
+
+# Expose Streamlit port
+EXPOSE 8501
+
+# Run the application
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
