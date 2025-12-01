@@ -1,7 +1,7 @@
 [server]
-# Maximum upload size in MB (default is 200MB)
-maxUploadSize = 1000
+enableCORS = false
+enableXsrfProtection = false
+enableWebsocketCompression = false
 
 [browser]
-# Disable gathering usage statistics
 gatherUsageStats = false

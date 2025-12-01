@@ -18,6 +18,7 @@ COPY pyproject.toml README.md ./
 COPY src/ src/
 COPY app.py .
 COPY pages/ pages/
+COPY .streamlit/ .streamlit/
 
 # Install dependencies (skip torch since it's in base image)
 RUN pip install --no-cache-dir \
