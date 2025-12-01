@@ -217,7 +217,7 @@ if not filename.endswith(".pdf"):
 # Auto-translate option
 auto_translate = st.checkbox(
     "🔄 Auto-translate after scraping",
-    value=False,
+    value=True,
     help="Automatically load the PDF into the translator and translate all pages",
 )
 
