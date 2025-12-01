@@ -1,14 +1,15 @@
 #!/bin/bash
 set -e
 
-cd /app
-
 # Pull latest code from GitHub
 echo "📥 Pulling latest code from GitHub..."
-if [ -d ".git" ]; then
+if [ -d "/app/.git" ]; then
+    cd /app
     git pull origin main
 else
-    git clone https://github.com/bartwisch/ManGER.git .
+    rm -rf /app
+    git clone https://github.com/bartwisch/ManGER.git /app
+    cd /app
 fi
 
 # Install the package

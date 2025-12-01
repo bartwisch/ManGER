@@ -12,7 +12,7 @@ Usage:
 from beam import Image, Pod
 
 # Use our existing Docker Hub image
-image = Image(base_image="hugobart/manger:cloud")
+image = Image(base_image="hugobart/manger:cloud-v2")
 
 # Define the Pod
 pod = Pod(
