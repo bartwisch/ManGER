@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+cd /
+
 # Pull latest code from GitHub
 echo "📥 Pulling latest code from GitHub..."
 if [ -d "/app/.git" ]; then
@@ -9,8 +11,9 @@ if [ -d "/app/.git" ]; then
 else
     rm -rf /app
     git clone https://github.com/bartwisch/ManGER.git /app
-    cd /app
 fi
+
+cd /app
 
 # Install the package
 pip install -e . --quiet
