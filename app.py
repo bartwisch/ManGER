@@ -13,12 +13,43 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 import streamlit as st
+from streamlit.components.v1 import html
 from PIL import Image, ImageDraw, ImageFont
 import io
 from loguru import logger
 
 # .env file path
 ENV_FILE = Path(__file__).parent / ".env"
+
+# JavaScript for localStorage API key management
+LOCAL_STORAGE_JS = """
+<script>
+// Load API key from localStorage on page load
+(function() {
+    const key = localStorage.getItem('manger_api_key');
+    if (key && window.parent) {
+        // Send to Streamlit via query params workaround
+        window.parent.postMessage({type: 'manger_api_key', key: key}, '*');
+    }
+})();
+
+// Function to save API key to localStorage
+function saveApiKey(key) {
+    if (key) {
+        localStorage.setItem('manger_api_key', key);
+    } else {
+        localStorage.removeItem('manger_api_key');
+    }
+}
+
+// Listen for save requests from Streamlit
+window.addEventListener('message', function(event) {
+    if (event.data && event.data.type === 'save_manger_api_key') {
+        saveApiKey(event.data.key);
+    }
+});
+</script>
+"""
 
 # Notification sound (base64 encoded short beep)
 NOTIFICATION_SOUND_HTML = """
