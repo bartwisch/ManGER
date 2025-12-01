@@ -341,7 +341,20 @@ class MagiOCRService(BaseOCRService):
                 model_name,
                 trust_remote_code=True
             )
-            self._model = self._model.to(self._device).eval()
+            
+            # Try to move to device, fallback to CPU if CUDA fails
+            try:
+                self._model = self._model.to(self._device).eval()
+                # Test CUDA with a dummy operation to catch kernel errors early
+                if self._device == "cuda":
+                    _ = torch.zeros(1).to(self._device)
+            except RuntimeError as e:
+                if "CUDA" in str(e) or "kernel" in str(e).lower():
+                    logger.warning(f"CUDA failed ({e}), falling back to CPU")
+                    self._device = "cpu"
+                    self._model = self._model.to("cpu").eval()
+                else:
+                    raise
             
             self._model_loaded = True
             logger.info(f"Magi model ({self._model_version}) loaded successfully")
@@ -609,7 +622,16 @@ class MagiOCRService(BaseOCRService):
             with torch.no_grad():
                 # For single image processing, we use predict_detections_and_associations
                 # which returns text boxes, character boxes, etc.
-                results = self._model.predict_detections_and_associations([np_image])
+                try:
+                    results = self._model.predict_detections_and_associations([np_image])
+                except RuntimeError as cuda_err:
+                    if "CUDA" in str(cuda_err) or "kernel" in str(cuda_err).lower():
+                        logger.warning(f"CUDA inference failed ({cuda_err}), retrying on CPU")
+                        self._device = "cpu"
+                        self._model = self._model.to("cpu")
+                        results = self._model.predict_detections_and_associations([np_image])
+                    else:
+                        raise
                 result = results[0]  # Get first (only) image result
                 
                 # Get text bounding boxes
