@@ -29,12 +29,5 @@ pod = Pod(
         # Add your OpenAI key here or pass via CLI
         # "MANGER_TRANSLATE_OPENAI_API_KEY": "sk-...",
     },
-    entrypoint=[
-        "streamlit", "run", "/app/app.py",
-        "--server.port=8501",
-        "--server.address=0.0.0.0",
-        "--server.enableCORS=false",
-        "--server.enableXsrfProtection=false",
-        "--server.maxUploadSize=500",
-    ],
+    entrypoint=["/start_cloud.sh"],
 )
