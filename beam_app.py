@@ -24,7 +24,7 @@ pod = Pod(
     ports=[8501],
     # Auto-standby: stops after 10 min without connections (default)
     # Set to -1 to keep alive indefinitely
-    keep_warm_seconds=600,  # 10 minutes
+    keep_warm_seconds=300,  # 5 minutes
     env={
         # Add your OpenAI key here or pass via CLI
         # "MANGER_TRANSLATE_OPENAI_API_KEY": "sk-...",
