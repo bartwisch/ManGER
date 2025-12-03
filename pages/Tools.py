@@ -524,6 +524,30 @@ with tab3:
 
         series_title = st.text_input("Series Title", placeholder="Solo Leveling")
 
+        # URL Preview
+        if url_pattern and "{chapter}" in url_pattern:
+            total_chapters_preview = end_chapter - start_chapter + 1
+            if total_chapters_preview > 0:
+                with st.expander(f"👁️ Preview {total_chapters_preview} URLs"):
+                    preview_urls = []
+                    # Show first 5 and last 5 if too many
+                    if total_chapters_preview > 10:
+                        for i in range(start_chapter, start_chapter + 5):
+                            preview_urls.append(url_pattern.replace("{chapter}", str(i)))
+                        preview_urls.append("...")
+                        for i in range(end_chapter - 4, end_chapter + 1):
+                            preview_urls.append(url_pattern.replace("{chapter}", str(i)))
+                    else:
+                        for i in range(start_chapter, end_chapter + 1):
+                            preview_urls.append(url_pattern.replace("{chapter}", str(i)))
+                    
+                    for url in preview_urls:
+                        st.code(url, language="text")
+            else:
+                st.warning("End chapter must be greater than or equal to start chapter.")
+        elif url_pattern:
+            st.warning("⚠️ URL pattern must contain `{chapter}` placeholder.")
+
         # Compression settings
         st.subheader("⚙️ Compression Settings")
         col1, col2 = st.columns(2)
