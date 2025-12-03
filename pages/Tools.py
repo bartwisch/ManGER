@@ -22,7 +22,7 @@ st.set_page_config(
 
 st.title("🛠️ Tools")
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
     [
         "📄 PDF Combiner",
         "📉 PDF Shrinker",
@@ -30,6 +30,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         "📚 CBZ Creator",
         "📖 EPUB Creator",
         "🔄 Format Converter",
+        "👁️ CBZ Reader",
     ]
 )
 
@@ -956,3 +957,191 @@ with tab6:
 
                     except Exception as e:
                         st.error(f"Failed to create PDF: {e}")
+
+with tab7:
+    st.header("👁️ CBZ Reader")
+    st.markdown("""
+    Read CBZ/CBR comic book archives directly in the browser.
+    """)
+
+    # Initialize session state for reader
+    if "reader_images" not in st.session_state:
+        st.session_state.reader_images = []
+    if "reader_current_page" not in st.session_state:
+        st.session_state.reader_current_page = 0
+    if "reader_filename" not in st.session_state:
+        st.session_state.reader_filename = ""
+
+    cbz_file = st.file_uploader(
+        "Upload CBZ/CBR file",
+        type=["cbz", "cbr", "zip", "rar"],
+        help="Upload a comic book archive to read",
+        key="cbz_reader_upload",
+    )
+
+    if cbz_file:
+        # Check if we need to load a new file
+        if cbz_file.name != st.session_state.reader_filename:
+            with st.spinner("Loading comic..."):
+                try:
+                    cbz_bytes = cbz_file.read()
+                    archive_service = ArchiveService()
+
+                    # Try CBZ first, then CBR
+                    if cbz_file.name.lower().endswith((".cbr", ".rar")):
+                        images = archive_service.extract_cbr(cbz_bytes)
+                    else:
+                        images = archive_service.extract_cbz(cbz_bytes)
+
+                    st.session_state.reader_images = images
+                    st.session_state.reader_current_page = 0
+                    st.session_state.reader_filename = cbz_file.name
+
+                except Exception as e:
+                    st.error(f"Failed to load archive: {e}")
+                    st.session_state.reader_images = []
+
+    # Display reader if we have images
+    if st.session_state.reader_images:
+        images = st.session_state.reader_images
+        total_pages = len(images)
+        current_page = st.session_state.reader_current_page
+
+        # Ensure current page is valid
+        if current_page >= total_pages:
+            current_page = 0
+            st.session_state.reader_current_page = 0
+
+        st.success(f"📖 **{st.session_state.reader_filename}** - {total_pages} pages")
+
+        # Reading mode selection
+        col_mode, col_fit = st.columns(2)
+        with col_mode:
+            reading_mode = st.radio(
+                "Reading Mode",
+                options=["single", "double", "vertical"],
+                format_func=lambda x: {
+                    "single": "Single Page",
+                    "double": "Double Page (Manga)",
+                    "vertical": "Vertical Scroll",
+                }[x],
+                horizontal=True,
+                key="reader_mode",
+            )
+        with col_fit:
+            fit_mode = st.radio(
+                "Fit",
+                options=["width", "height", "original"],
+                format_func=lambda x: {
+                    "width": "Fit Width",
+                    "height": "Fit Height",
+                    "original": "Original Size",
+                }[x],
+                horizontal=True,
+                key="reader_fit",
+            )
+
+        # Navigation controls
+        st.divider()
+
+        if reading_mode == "vertical":
+            # Vertical scroll mode - show all pages
+            st.caption(f"Showing all {total_pages} pages (scroll down)")
+
+            for idx, img in enumerate(images):
+                st.image(img, caption=f"Page {idx + 1}", use_container_width=(fit_mode == "width"))
+
+        else:
+            # Single or double page mode with navigation
+            nav_col1, nav_col2, nav_col3, nav_col4, nav_col5 = st.columns([1, 1, 2, 1, 1])
+
+            with nav_col1:
+                if st.button("⏮️ First", use_container_width=True, disabled=current_page == 0):
+                    st.session_state.reader_current_page = 0
+                    st.rerun()
+
+            with nav_col2:
+                step = 2 if reading_mode == "double" else 1
+                if st.button("◀️ Prev", use_container_width=True, disabled=current_page == 0):
+                    st.session_state.reader_current_page = max(0, current_page - step)
+                    st.rerun()
+
+            with nav_col3:
+                # Page selector
+                if reading_mode == "double":
+                    page_display = f"Pages {current_page + 1}-{min(current_page + 2, total_pages)} of {total_pages}"
+                else:
+                    page_display = f"Page {current_page + 1} of {total_pages}"
+
+                new_page = st.number_input(
+                    "Go to page",
+                    min_value=1,
+                    max_value=total_pages,
+                    value=current_page + 1,
+                    key="reader_page_input",
+                    label_visibility="collapsed",
+                )
+                if new_page - 1 != current_page:
+                    st.session_state.reader_current_page = new_page - 1
+                    st.rerun()
+
+            with nav_col4:
+                step = 2 if reading_mode == "double" else 1
+                max_page = total_pages - 1 if reading_mode == "single" else total_pages - 2
+                if st.button("Next ▶️", use_container_width=True, disabled=current_page >= max_page):
+                    st.session_state.reader_current_page = min(max_page, current_page + step)
+                    st.rerun()
+
+            with nav_col5:
+                max_page = total_pages - 1 if reading_mode == "single" else max(0, total_pages - 2)
+                if st.button("Last ⏭️", use_container_width=True, disabled=current_page >= max_page):
+                    st.session_state.reader_current_page = max_page
+                    st.rerun()
+
+            # Display current page(s)
+            st.divider()
+
+            if reading_mode == "single":
+                # Single page view
+                img = images[current_page]
+                st.image(
+                    img,
+                    caption=f"Page {current_page + 1}",
+                    use_container_width=(fit_mode == "width"),
+                )
+
+            elif reading_mode == "double":
+                # Double page spread (manga style - right to left)
+                col_right, col_left = st.columns(2)
+
+                # Right page first (manga reading order)
+                with col_right:
+                    if current_page < total_pages:
+                        st.image(
+                            images[current_page],
+                            caption=f"Page {current_page + 1}",
+                            use_container_width=(fit_mode == "width"),
+                        )
+
+                # Left page second
+                with col_left:
+                    if current_page + 1 < total_pages:
+                        st.image(
+                            images[current_page + 1],
+                            caption=f"Page {current_page + 2}",
+                            use_container_width=(fit_mode == "width"),
+                        )
+
+            # Keyboard navigation hint
+            st.caption("💡 Tip: Use the page number input to jump to any page")
+
+        # Close/clear button
+        st.divider()
+        if st.button("🗑️ Close Comic", use_container_width=True):
+            st.session_state.reader_images = []
+            st.session_state.reader_current_page = 0
+            st.session_state.reader_filename = ""
+            st.rerun()
+
+    else:
+        st.info("📚 Upload a CBZ or CBR file to start reading")

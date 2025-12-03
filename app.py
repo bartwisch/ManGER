@@ -649,6 +649,14 @@ def init_session_state():
         st.session_state.pipeline = None
     if "pdf_service" not in st.session_state:
         st.session_state.pdf_service = PDFService()
+    if "archive_service" not in st.session_state:
+        st.session_state.archive_service = ArchiveService()
+    if "manga_loaded" not in st.session_state:
+        st.session_state.manga_loaded = False
+    if "manga_source" not in st.session_state:
+        st.session_state.manga_source = None  # "pdf", "cbz", or "url"
+    if "manga_images" not in st.session_state:
+        st.session_state.manga_images = []  # List of PIL images for CBZ
     if "pdf_loaded" not in st.session_state:
         st.session_state.pdf_loaded = False
     if "pdf_page_count" not in st.session_state:
@@ -673,6 +681,14 @@ def init_session_state():
         st.session_state.range_select_mode = False
     if "last_clicked_page" not in st.session_state:
         st.session_state.last_clicked_page = None
+    # New: translate mode toggle
+    if "translate_mode" not in st.session_state:
+        st.session_state.translate_mode = True  # Default to translate
+    # Reader state
+    if "reader_current_page" not in st.session_state:
+        st.session_state.reader_current_page = 0
+    if "reader_mode" not in st.session_state:
+        st.session_state.reader_mode = "single"  # single, double, vertical
 
 
 def dismiss_download_dialog():
@@ -923,7 +939,7 @@ def _process_all_selected_pages(settings: dict):
         # Load page if not cached
         if page_num not in st.session_state.pages_data:
             try:
-                img = st.session_state.pdf_service.get_page_image(page_num)
+                img = get_page_image(page_num)
                 st.session_state.pages_data[page_num] = {
                     "image": img,
                     "blocks": [],
@@ -974,25 +990,41 @@ def _process_all_selected_pages(settings: dict):
     st.rerun()
 
 
-@st.dialog("📥 Download Translated Manga")
+@st.dialog("📥 Download Manga")
 def _show_download_dialog():
-    """Show a dialog to download the translated manga in various formats."""
-    # Collect all result images from pages_data (not relying on selected_pages)
-    result_images = []
-    processed_pages = []
-    for page_num, page_data in sorted(st.session_state.pages_data.items()):
-        if page_data and page_data.get("result"):
-            result_images.append(page_data["result"])
-            processed_pages.append(page_num)
+    """Show a dialog to download the manga in various formats."""
+    # Check if we have translated results or just reading mode
+    has_translated = any(pd.get("result") for pd in st.session_state.pages_data.values())
 
-    if not result_images:
-        st.error("No translated pages available!")
-        if st.button("Close"):
-            st.session_state.show_download_dialog = False
-            st.rerun()
-        return
+    # Collect images to export
+    if has_translated:
+        # Use translated results
+        result_images = []
+        processed_pages = []
+        for page_num, page_data in sorted(st.session_state.pages_data.items()):
+            if page_data and page_data.get("result"):
+                result_images.append(page_data["result"])
+                processed_pages.append(page_num)
 
-    st.success(f"Successfully processed {len(result_images)} pages!")
+        if not result_images:
+            st.error("No translated pages available!")
+            if st.button("Close"):
+                st.session_state.show_download_dialog = False
+                st.rerun()
+            return
+
+        st.success(f"Exporting {len(result_images)} translated pages")
+    else:
+        # Reader mode - export original images
+        result_images = []
+        total_pages = get_page_count()
+
+        for page_num in range(total_pages):
+            img = get_page_image(page_num)
+            result_images.append(img)
+
+        processed_pages = list(range(total_pages))
+        st.info(f"Exporting {len(result_images)} pages (original)")
 
     # Format selection
     export_format = st.radio(
@@ -1042,9 +1074,10 @@ def _show_download_dialog():
     else:
         page_range = "all"
 
-    # Default filename based on format
+    # Default filename based on format and whether translated
     ext = ".pdf" if export_format == "PDF" else ".cbz"
-    default_name = f"{base_name} {page_range} GER{ext}"
+    suffix = " GER" if has_translated else ""
+    default_name = f"{base_name}{suffix}{ext}"
     file_name = st.text_input("File name:", value=default_name)
 
     # Ensure correct extension
@@ -1399,13 +1432,13 @@ def render_page_viewer():
     if current_page_num not in st.session_state.pages_data:
         with st.spinner(f"Loading page {current_page_num + 1}..."):
             try:
-                img = st.session_state.pdf_service.get_page_image(current_page_num)
+                img = get_page_image(current_page_num)
                 st.session_state.pages_data[current_page_num] = {
                     "image": img,
                     "blocks": [],
                     "result": None,
                 }
-            except PDFError as e:
+            except Exception as e:
                 st.error(f"Failed to load page: {e}")
                 return
 
@@ -1717,6 +1750,164 @@ def process_all_pages():
     st.rerun()
 
 
+def reset_manga_state():
+    """Reset all manga-related state for loading a new file."""
+    st.session_state.pdf_service.close()
+    st.session_state.manga_loaded = False
+    st.session_state.manga_source = None
+    st.session_state.manga_images = []
+    st.session_state.pdf_loaded = False
+    st.session_state.pdf_page_count = 0
+    st.session_state.selected_pages = []
+    st.session_state.page_thumbnails = []
+    st.session_state.pages_data = {}
+    st.session_state.current_page_idx = 0
+    st.session_state.reader_current_page = 0
+    st.session_state.processing_complete = False
+    st.session_state.show_download_dialog = False
+    # Clear page selection checkboxes
+    keys_to_clear = [k for k in st.session_state.keys() if k.startswith("page_select_")]
+    for k in keys_to_clear:
+        del st.session_state[k]
+
+
+def get_page_image(page_num: int) -> Image.Image:
+    """Get a page image regardless of source (PDF or CBZ)."""
+    if st.session_state.manga_source == "cbz":
+        return st.session_state.manga_images[page_num]
+    else:  # PDF
+        return st.session_state.pdf_service.get_page_image(page_num)
+
+
+def get_page_count() -> int:
+    """Get total page count regardless of source."""
+    if st.session_state.manga_source == "cbz":
+        return len(st.session_state.manga_images)
+    else:
+        return st.session_state.pdf_page_count
+
+
+def render_reader_view():
+    """Render a simple reader view without translation."""
+    if not st.session_state.manga_loaded:
+        return
+
+    total_pages = get_page_count()
+    current_page = st.session_state.reader_current_page
+
+    # Ensure valid page
+    if current_page >= total_pages:
+        current_page = 0
+        st.session_state.reader_current_page = 0
+
+    # Reading mode selection
+    col_mode, col_fit = st.columns(2)
+    with col_mode:
+        reading_mode = st.radio(
+            "Reading Mode",
+            options=["single", "double", "vertical"],
+            format_func=lambda x: {
+                "single": "Single Page",
+                "double": "Double Page (Manga)",
+                "vertical": "Vertical Scroll",
+            }[x],
+            horizontal=True,
+            key="main_reader_mode",
+        )
+    with col_fit:
+        if reading_mode != "vertical":
+            fit_width = st.checkbox("Fit to width", value=True, key="reader_fit_width")
+
+    st.divider()
+
+    if reading_mode == "vertical":
+        # Vertical scroll - show all pages
+        st.caption(f"Showing all {total_pages} pages")
+        for idx in range(total_pages):
+            img = get_page_image(idx)
+            st.image(img, caption=f"Page {idx + 1}", use_container_width=True)
+    else:
+        # Navigation
+        nav_col1, nav_col2, nav_col3, nav_col4, nav_col5 = st.columns([1, 1, 2, 1, 1])
+
+        with nav_col1:
+            if st.button(
+                "⏮️ First", use_container_width=True, disabled=current_page == 0, key="reader_first"
+            ):
+                st.session_state.reader_current_page = 0
+                st.rerun()
+
+        with nav_col2:
+            step = 2 if reading_mode == "double" else 1
+            if st.button(
+                "◀️ Prev", use_container_width=True, disabled=current_page == 0, key="reader_prev"
+            ):
+                st.session_state.reader_current_page = max(0, current_page - step)
+                st.rerun()
+
+        with nav_col3:
+            new_page = st.number_input(
+                "Page",
+                min_value=1,
+                max_value=total_pages,
+                value=current_page + 1,
+                key="reader_page_num",
+                label_visibility="collapsed",
+            )
+            if new_page - 1 != current_page:
+                st.session_state.reader_current_page = new_page - 1
+                st.rerun()
+
+        with nav_col4:
+            step = 2 if reading_mode == "double" else 1
+            max_page = total_pages - (2 if reading_mode == "double" else 1)
+            if st.button(
+                "Next ▶️",
+                use_container_width=True,
+                disabled=current_page >= max_page,
+                key="reader_next",
+            ):
+                st.session_state.reader_current_page = min(max_page, current_page + step)
+                st.rerun()
+
+        with nav_col5:
+            max_page = total_pages - (2 if reading_mode == "double" else 1)
+            if st.button(
+                "Last ⏭️",
+                use_container_width=True,
+                disabled=current_page >= max_page,
+                key="reader_last",
+            ):
+                st.session_state.reader_current_page = max_page
+                st.rerun()
+
+        # Display page(s)
+        if reading_mode == "single":
+            img = get_page_image(current_page)
+            st.image(
+                img,
+                caption=f"Page {current_page + 1} of {total_pages}",
+                use_container_width=fit_width,
+            )
+
+        elif reading_mode == "double":
+            col_right, col_left = st.columns(2)
+            with col_right:
+                if current_page < total_pages:
+                    img = get_page_image(current_page)
+                    st.image(img, caption=f"Page {current_page + 1}", use_container_width=fit_width)
+            with col_left:
+                if current_page + 1 < total_pages:
+                    img = get_page_image(current_page + 1)
+                    st.image(img, caption=f"Page {current_page + 2}", use_container_width=fit_width)
+
+    # Download button for reader mode
+    st.divider()
+    if st.button("📥 Download", use_container_width=True, key="reader_download"):
+        st.session_state.show_download_dialog = True
+        st.rerun()
+
+
 def main():
     """Main application entry point."""
     init_session_state()
@@ -1727,149 +1918,263 @@ def main():
     # Header with navigation
     col1, col2 = st.columns([4, 1])
     with col1:
-        st.title("📖 ManGER - Manga Translator")
+        st.title("📖 ManGER - Manga Reader & Translator")
     with col2:
         st.link_button("🛠️ Tools", "/Tools", use_container_width=True)
 
-    st.markdown("Detect and translate text in manga. Select pages and start translating.")
-
     # Sidebar settings
     settings = render_sidebar()
-
-    # Store settings in session state for other functions to access
     st.session_state._current_settings = settings
-
-    # Update PDF service DPI
     st.session_state.pdf_service.dpi = settings["render_dpi"]
 
-    # Two options: Scrape or Upload
-    st.subheader("📥 Get Your Manga")
+    # === IMPORT SECTION ===
+    if not st.session_state.manga_loaded:
+        st.subheader("📥 Import Manga")
 
-    col_scrape, col_or, col_upload = st.columns([2, 1, 2])
-    with col_scrape:
-        if st.button("🌐 Scrape Web Manga", use_container_width=True, type="primary"):
-            st.switch_page("pages/WebManga.py")
-        st.caption("Download from manga websites")
-    with col_or:
-        st.markdown(
-            "<div style='text-align: center; padding-top: 0.5rem; color: #888;'>OR</div>",
-            unsafe_allow_html=True,
+        # Translate mode toggle - prominent position
+        translate_mode = st.checkbox(
+            "🌐 **Translate manga**",
+            value=st.session_state.translate_mode,
+            help="Enable to OCR and translate text. Disable to just read.",
+            key="translate_checkbox",
         )
-    with col_upload:
-        uploaded_file = st.file_uploader(
-            "📄 Upload PDF",
-            type=["pdf"],
-            help="Upload a manga PDF file",
-            label_visibility="collapsed",
-        )
-        st.caption("Upload a manga PDF file")
+        st.session_state.translate_mode = translate_mode
 
-    # Check for scraped PDF from WebManga tool
-    scraped_pdf_bytes = st.session_state.pop("scraped_pdf_bytes", None)
-    scraped_pdf_filename = st.session_state.pop("scraped_pdf_filename", None)
-    auto_translate_scraped = st.session_state.pop("auto_translate_scraped", False)
-
-    # Load scraped PDF if available
-    if scraped_pdf_bytes and not st.session_state.pdf_loaded:
-        with st.spinner("Loading scraped PDF..."):
-            try:
-                st.session_state.original_filename = scraped_pdf_filename or "scraped_manga.pdf"
-                page_count = st.session_state.pdf_service.load_from_bytes(scraped_pdf_bytes)
-                st.session_state.pdf_loaded = True
-                st.session_state.pdf_page_count = page_count
-
-                # Select all pages by default
-                st.session_state.selected_pages = list(range(page_count))
-                for i in range(page_count):
-                    st.session_state[f"page_select_{i}"] = True
-
-                # Generate thumbnails
-                with st.spinner("Generating page previews..."):
-                    thumbnails = st.session_state.pdf_service.get_all_thumbnails(
-                        max_size=(120, 120)
-                    )
-                    st.session_state.page_thumbnails = thumbnails
-
-                st.success(f"Loaded scraped PDF with {page_count} pages!")
-
-                # Auto-start translation if requested
-                if auto_translate_scraped:
-                    st.session_state.start_auto_translate = True
-
-                st.rerun()
-
-            except PDFError as e:
-                st.error(f"Failed to load scraped PDF: {e}")
-
-    if uploaded_file and not st.session_state.pdf_loaded:
-        with st.spinner("Loading PDF..."):
-            try:
-                # Store original filename
-                st.session_state.original_filename = uploaded_file.name
-
-                # Read the file bytes
-                pdf_bytes = uploaded_file.read()
-                page_count = st.session_state.pdf_service.load_from_bytes(pdf_bytes)
-                st.session_state.pdf_loaded = True
-                st.session_state.pdf_page_count = page_count
-
-                # Select all pages by default
-                st.session_state.selected_pages = list(range(page_count))
-                # Set all checkbox states to True
-                for i in range(page_count):
-                    st.session_state[f"page_select_{i}"] = True
-
-                # Generate thumbnails
-                with st.spinner("Generating page previews..."):
-                    thumbnails = st.session_state.pdf_service.get_all_thumbnails(
-                        max_size=(120, 120)
-                    )
-                    st.session_state.page_thumbnails = thumbnails
-
-                st.success(f"Loaded PDF with {page_count} pages!")
-                st.rerun()
-
-            except PDFError as e:
-                st.error(f"Failed to load PDF: {e}")
-
-    # Reset button
-    if st.session_state.pdf_loaded:
-        if st.button("🔄 Load New PDF", on_click=dismiss_download_dialog):
-            st.session_state.pdf_service.close()
-            st.session_state.pdf_loaded = False
-            st.session_state.pdf_page_count = 0
-            st.session_state.selected_pages = []
-            st.session_state.page_thumbnails = []
-            st.session_state.pages_data = {}
-            st.session_state.current_page_idx = 0
-            st.session_state.processing_complete = False
-            st.rerun()
-
-        # Start All button at the very top (always visible)
-        provider = settings.get("provider", "openai")
-        api_key = settings.get("api_key", "")
-        needs_api_key = provider == "openai" and not api_key
-        has_pages = len(st.session_state.selected_pages) > 0
-
-        # Check for auto-translate trigger from WebManga scraper
-        auto_translate_now = st.session_state.pop("start_auto_translate", False)
-
-        page_count = len(st.session_state.selected_pages)
-
-        # If auto-translating, show info instead of clickable button
-        if auto_translate_now and has_pages and not needs_api_key:
-            st.info(f"🔄 Auto-translating {page_count} pages...")
-            _process_all_selected_pages(settings)
+        if translate_mode:
+            st.caption("Manga will be processed with OCR and translation")
         else:
+            st.caption("Manga will be opened in reader mode only")
+
+        st.divider()
+
+        # Two import methods side by side
+        import_method = st.radio(
+            "Import from",
+            options=["file", "url"],
+            format_func=lambda x: "📁 File Upload" if x == "file" else "🌐 Web URL",
+            horizontal=True,
+            key="import_method",
+        )
+
+        if import_method == "file":
+            uploaded_file = st.file_uploader(
+                "Upload manga file",
+                type=["pdf", "cbz", "cbr", "zip"],
+                help="Upload a PDF or CBZ/CBR file",
+                key="main_file_uploader",
+            )
+
+            if uploaded_file:
+                with st.spinner("Loading manga..."):
+                    try:
+                        file_bytes = uploaded_file.read()
+                        filename = uploaded_file.name.lower()
+                        st.session_state.original_filename = uploaded_file.name
+
+                        if filename.endswith(".pdf"):
+                            # Load as PDF
+                            page_count = st.session_state.pdf_service.load_from_bytes(file_bytes)
+                            st.session_state.manga_source = "pdf"
+                            st.session_state.pdf_loaded = True
+                            st.session_state.pdf_page_count = page_count
+
+                            # Generate thumbnails
+                            thumbnails = st.session_state.pdf_service.get_all_thumbnails(
+                                max_size=(120, 120)
+                            )
+                            st.session_state.page_thumbnails = thumbnails
+
+                        else:
+                            # Load as CBZ/CBR
+                            archive_service = st.session_state.archive_service
+                            if filename.endswith((".cbr", ".rar")):
+                                images = archive_service.extract_cbr(file_bytes)
+                            else:
+                                images = archive_service.extract_cbz(file_bytes)
+
+                            st.session_state.manga_source = "cbz"
+                            st.session_state.manga_images = images
+                            st.session_state.pdf_page_count = len(images)
+
+                            # Generate thumbnails from images
+                            thumbnails = []
+                            for idx, img in enumerate(images):
+                                thumb = img.copy()
+                                thumb.thumbnail((120, 120), Image.Resampling.LANCZOS)
+                                thumbnails.append((idx, thumb))
+                            st.session_state.page_thumbnails = thumbnails
+
+                        # Mark as loaded
+                        st.session_state.manga_loaded = True
+                        page_count = get_page_count()
+
+                        # Select all pages by default
+                        st.session_state.selected_pages = list(range(page_count))
+                        for i in range(page_count):
+                            st.session_state[f"page_select_{i}"] = True
+
+                        st.success(f"Loaded {page_count} pages!")
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"Failed to load file: {e}")
+
+        else:  # URL import
+            st.markdown("Enter a manga chapter URL to download and read/translate.")
+
+            url = st.text_input(
+                "Manga URL",
+                placeholder="https://example.com/manga/chapter/1",
+                key="import_url",
+            )
+
+            if url:
+                col1, col2 = st.columns(2)
+                with col1:
+                    quality = st.slider("Quality", 40, 90, 70, key="url_quality")
+                with col2:
+                    max_dim = st.slider("Max Size", 800, 2000, 1400, step=100, key="url_maxdim")
+
+                if st.button("📥 Download & Import", type="primary", use_container_width=True):
+                    # Import the download function from Tools
+                    from pages.Tools import download_page_as_pdf
+
+                    progress = st.progress(0, "Starting...")
+
+                    def update_progress(p, text):
+                        progress.progress(min(p, 0.99), text)
+
+                    try:
+                        # Download as PDF
+                        raw_pdf = download_page_as_pdf(url, update_progress)
+
+                        # Compress
+                        progress.progress(0.9, "Compressing...")
+                        pdf_bytes = st.session_state.pdf_service.shrink_pdf(
+                            raw_pdf, quality=quality, max_dimension=max_dim
+                        )
+
+                        # Load it
+                        page_count = st.session_state.pdf_service.load_from_bytes(pdf_bytes)
+                        st.session_state.manga_source = "pdf"
+                        st.session_state.pdf_loaded = True
+                        st.session_state.pdf_page_count = page_count
+                        st.session_state.original_filename = "web_manga.pdf"
+
+                        # Generate thumbnails
+                        thumbnails = st.session_state.pdf_service.get_all_thumbnails(
+                            max_size=(120, 120)
+                        )
+                        st.session_state.page_thumbnails = thumbnails
+
+                        # Mark loaded
+                        st.session_state.manga_loaded = True
+                        st.session_state.selected_pages = list(range(page_count))
+                        for i in range(page_count):
+                            st.session_state[f"page_select_{i}"] = True
+
+                        progress.empty()
+                        st.success(f"Downloaded {page_count} pages!")
+                        st.rerun()
+
+                    except Exception as e:
+                        progress.empty()
+                        st.error(f"Failed to download: {e}")
+
+        # Check for scraped PDF from WebManga tool
+        scraped_pdf_bytes = st.session_state.pop("scraped_pdf_bytes", None)
+        scraped_pdf_filename = st.session_state.pop("scraped_pdf_filename", None)
+        auto_translate = st.session_state.pop("auto_translate_scraped", False)
+
+        if scraped_pdf_bytes:
+            with st.spinner("Loading scraped manga..."):
+                try:
+                    st.session_state.original_filename = scraped_pdf_filename or "scraped_manga.pdf"
+                    page_count = st.session_state.pdf_service.load_from_bytes(scraped_pdf_bytes)
+                    st.session_state.manga_source = "pdf"
+                    st.session_state.pdf_loaded = True
+                    st.session_state.pdf_page_count = page_count
+                    st.session_state.manga_loaded = True
+
+                    thumbnails = st.session_state.pdf_service.get_all_thumbnails(
+                        max_size=(120, 120)
+                    )
+                    st.session_state.page_thumbnails = thumbnails
+
+                    st.session_state.selected_pages = list(range(page_count))
+                    for i in range(page_count):
+                        st.session_state[f"page_select_{i}"] = True
+
+                    if auto_translate:
+                        st.session_state.translate_mode = True
+                        st.session_state.start_auto_translate = True
+
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to load: {e}")
+
+    # === MANGA LOADED - Show Reader or Translator ===
+    else:
+        # Top bar with file info and controls
+        col_info, col_mode, col_reset = st.columns([3, 1, 1])
+
+        with col_info:
+            source_icon = "📄" if st.session_state.manga_source == "pdf" else "📚"
+            st.markdown(
+                f"**{source_icon} {st.session_state.original_filename}** ({get_page_count()} pages)"
+            )
+
+        with col_mode:
+            # Toggle between read and translate mode
+            new_translate_mode = st.checkbox(
+                "🌐 Translate",
+                value=st.session_state.translate_mode,
+                key="mode_toggle",
+            )
+            if new_translate_mode != st.session_state.translate_mode:
+                st.session_state.translate_mode = new_translate_mode
+                st.rerun()
+
+        with col_reset:
+            if st.button("🔄 New", use_container_width=True):
+                reset_manga_state()
+                st.rerun()
+
+        # Show download dialog if requested
+        if st.session_state.show_download_dialog:
+            _show_download_dialog()
+
+        # === READER MODE (no translation) ===
+        if not st.session_state.translate_mode:
+            st.divider()
+            render_reader_view()
+
+        # === TRANSLATE MODE ===
+        else:
+            # Check for auto-translate trigger
+            auto_translate_now = st.session_state.pop("start_auto_translate", False)
+
+            provider = settings.get("provider", "openai")
+            api_key = settings.get("api_key", "")
+            needs_api_key = provider == "openai" and not api_key
+            has_pages = len(st.session_state.selected_pages) > 0
+            page_count = len(st.session_state.selected_pages)
+
+            # Auto-translate if triggered
+            if auto_translate_now and has_pages and not needs_api_key:
+                st.info(f"🔄 Auto-translating {page_count} pages...")
+                _process_all_selected_pages(settings)
+
+            # Start button
             button_label = (
-                f"▶️ Start All Selected Pages ({page_count} pages)"
+                f"▶️ Translate Selected Pages ({page_count})"
                 if has_pages
-                else "▶️ Start (Select pages first)"
+                else "▶️ Select pages first"
             )
 
             if st.button(
                 button_label,
-                key="start_all_top",
+                key="start_translate",
                 type="primary",
                 use_container_width=True,
                 disabled=needs_api_key or not has_pages,
@@ -1877,87 +2182,55 @@ def main():
             ):
                 _process_all_selected_pages(settings)
 
-        if needs_api_key:
-            st.caption("⚠️ Enter OpenAI API key in sidebar or use 'dummy' provider")
+            if needs_api_key:
+                st.caption("⚠️ Enter OpenAI API key in sidebar or use 'dummy' provider")
 
-        # Check if we have any processed pages to download (Top Button)
-        has_results = False
-        if "pages_data" in st.session_state:
-            for page_data in st.session_state.pages_data.values():
-                if page_data.get("result"):
-                    has_results = True
-                    break
+            # Download button if results available
+            has_results = any(pd.get("result") for pd in st.session_state.pages_data.values())
+            if has_results:
+                if st.button(
+                    "📥 Download Translated", key="download_translated", use_container_width=True
+                ):
+                    st.session_state.show_download_dialog = True
+                    st.rerun()
 
-        if has_results:
-            if st.button(
-                "📥 Download Translated PDF",
-                key="download_top",
-                type="secondary",
-                use_container_width=True,
-            ):
-                st.session_state.show_download_dialog = True
-                st.rerun()
+            # Page selection grid
+            render_page_selector()
 
-    # Page selection
-    if st.session_state.pdf_loaded:
-        render_page_selector()
+            st.divider()
 
-        st.divider()
+            # Tabs for viewer and batch processing
+            tab1, tab2 = st.tabs(["📖 Page Viewer", "🚀 Batch Processing"])
 
-        # Tabs for different views
-        tab1, tab2 = st.tabs(["📖 Page Viewer", "🚀 Batch Processing"])
+            with tab1:
+                render_page_viewer()
 
-        with tab1:
-            render_page_viewer()
+            with tab2:
+                render_batch_processing()
 
-        with tab2:
-            render_batch_processing()
+                if st.session_state.processing_complete:
+                    st.subheader("📊 Results Summary")
+                    processed = sum(
+                        1
+                        for p in st.session_state.selected_pages
+                        if st.session_state.pages_data.get(p, {}).get("result")
+                    )
+                    failed = len(st.session_state.selected_pages) - processed
+                    total_blocks = sum(
+                        len(st.session_state.pages_data.get(p, {}).get("blocks", []))
+                        for p in st.session_state.selected_pages
+                    )
 
-            # Show results summary
-            if st.session_state.processing_complete:
-                st.subheader("📊 Results Summary")
-
-                processed = 0
-                failed = 0
-                total_blocks = 0
-
-                for page_num in st.session_state.selected_pages:
-                    if page_num in st.session_state.pages_data:
-                        page_data = st.session_state.pages_data[page_num]
-                        if page_data.get("result"):
-                            processed += 1
-                            total_blocks += len(page_data["blocks"])
-                        else:
-                            failed += 1
-
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Pages Processed", processed)
-                col2.metric("Pages Failed", failed)
-                col3.metric("Total Text Blocks", total_blocks)
-
-    # Bottom Download Button
-    has_results_bottom = False
-    if "pages_data" in st.session_state:
-        for page_data in st.session_state.pages_data.values():
-            if page_data.get("result"):
-                has_results_bottom = True
-                break
-
-    if has_results_bottom:
-        if st.button(
-            "📥 Download Translated PDF",
-            key="download_bottom",
-            type="primary",
-            use_container_width=True,
-        ):
-            st.session_state.show_download_dialog = True
-            st.rerun()
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Processed", processed)
+                    c2.metric("Failed", failed)
+                    c3.metric("Text Blocks", total_blocks)
 
     # Footer
     st.divider()
-    st.caption("ManGER v0.1.0 | [GitHub](https://github.com/example/manger) | Built with Streamlit")
+    st.caption("ManGER v0.1.0 | Built with Streamlit")
 
-    # Scroll to results at the very end (after all content is rendered)
+    # Scroll to results at the very end
     _render_pending_scroll()
 
 
