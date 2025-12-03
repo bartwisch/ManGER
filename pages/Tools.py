@@ -11,6 +11,8 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from manger.services.pdf import PDFService, PDFError
+from manger.services.archive import ArchiveService
+from manger.services.epub import EPUBService, Chapter
 
 st.set_page_config(
     page_title="Tools - ManGER",
@@ -20,105 +22,128 @@ st.set_page_config(
 
 st.title("🛠️ Tools")
 
-tab1, tab2, tab3, tab4 = st.tabs(["📄 PDF Combiner", "📉 PDF Shrinker", "🌐 Web Manga to PDF", "🚧 More Tools"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    [
+        "📄 PDF Combiner",
+        "📉 PDF Shrinker",
+        "🌐 Web Manga to PDF",
+        "📚 CBZ Creator",
+        "📖 EPUB Creator",
+        "🔄 Format Converter",
+    ]
+)
 
 with tab1:
     st.header("PDF Combiner")
-    st.markdown("Upload multiple PDF files to combine them into a single document. **Drag to reorder!**")
-    
+    st.markdown(
+        "Upload multiple PDF files to combine them into a single document. **Drag to reorder!**"
+    )
+
     uploaded_files = st.file_uploader(
-        "Choose PDF files", 
-        type="pdf", 
+        "Choose PDF files",
+        type="pdf",
         accept_multiple_files=True,
         help="Select multiple files to merge.",
         key="pdf_combiner_uploader",
     )
-    
+
     if uploaded_files:
         # Initialize file order in session state
         if "pdf_file_order" not in st.session_state:
             st.session_state.pdf_file_order = list(range(len(uploaded_files)))
-        
+
         # Reset order if number of files changed
         if len(st.session_state.pdf_file_order) != len(uploaded_files):
             st.session_state.pdf_file_order = list(range(len(uploaded_files)))
-        
+
         st.subheader(f"📋 Arrange Order ({len(uploaded_files)} files)")
         st.caption("Use the buttons to move files up or down in the merge order.")
-        
+
         # Store file data to preserve across reorders
-        if "pdf_file_data" not in st.session_state or len(st.session_state.get("pdf_file_data", [])) != len(uploaded_files):
+        if "pdf_file_data" not in st.session_state or len(
+            st.session_state.get("pdf_file_data", [])
+        ) != len(uploaded_files):
             st.session_state.pdf_file_data = []
             for f in uploaded_files:
                 f.seek(0)
-                st.session_state.pdf_file_data.append({
-                    "name": f.name,
-                    "data": f.read(),
-                    "size": f.size,
-                })
-        
+                st.session_state.pdf_file_data.append(
+                    {
+                        "name": f.name,
+                        "data": f.read(),
+                        "size": f.size,
+                    }
+                )
+
         # Display files in current order with move buttons
         order = st.session_state.pdf_file_order
-        
+
         for display_idx, file_idx in enumerate(order):
             file_info = st.session_state.pdf_file_data[file_idx]
             size_mb = file_info["size"] / (1024 * 1024)
-            
+
             col1, col2, col3, col4 = st.columns([0.5, 4, 1, 1])
-            
+
             with col1:
                 st.write(f"**{display_idx + 1}.**")
-            
+
             with col2:
                 st.write(f"📄 {file_info['name']} ({size_mb:.1f} MB)")
-            
+
             with col3:
                 if display_idx > 0:
                     if st.button("⬆️", key=f"up_{file_idx}", help="Move up"):
                         # Swap with previous
-                        order[display_idx], order[display_idx - 1] = order[display_idx - 1], order[display_idx]
+                        order[display_idx], order[display_idx - 1] = (
+                            order[display_idx - 1],
+                            order[display_idx],
+                        )
                         st.rerun()
                 else:
                     st.write("")  # Empty placeholder
-            
+
             with col4:
                 if display_idx < len(order) - 1:
                     if st.button("⬇️", key=f"down_{file_idx}", help="Move down"):
                         # Swap with next
-                        order[display_idx], order[display_idx + 1] = order[display_idx + 1], order[display_idx]
+                        order[display_idx], order[display_idx + 1] = (
+                            order[display_idx + 1],
+                            order[display_idx],
+                        )
                         st.rerun()
                 else:
                     st.write("")  # Empty placeholder
-        
+
         st.divider()
-        
+
         col1, col2 = st.columns([1, 1])
         with col1:
             if st.button("🔄 Reset Order", use_container_width=True):
                 st.session_state.pdf_file_order = list(range(len(uploaded_files)))
                 st.rerun()
-        
+
         with col2:
             if st.button("📑 Merge PDFs", type="primary", use_container_width=True):
                 with st.spinner("Merging PDFs..."):
                     try:
                         # Get files in the specified order
                         ordered_data = [st.session_state.pdf_file_data[i]["data"] for i in order]
-                        
+
                         # Merge
                         service = PDFService()
                         merged_pdf = service.merge_pdfs(ordered_data)
-                        
+
                         st.success("✅ PDFs merged successfully!")
-                        
+
                         # Calculate merged size
                         merged_size_mb = len(merged_pdf) / (1024 * 1024)
                         st.info(f"📊 Merged PDF size: {merged_size_mb:.1f} MB")
-                        
+
                         # Default filename based on first file in order
-                        first_name = st.session_state.pdf_file_data[order[0]]["name"].rsplit(".", 1)[0]
+                        first_name = st.session_state.pdf_file_data[order[0]]["name"].rsplit(
+                            ".", 1
+                        )[0]
                         default_name = f"{first_name}_merged.pdf"
-                        
+
                         st.download_button(
                             label="📥 Download Merged PDF",
                             data=merged_pdf,
@@ -127,7 +152,7 @@ with tab1:
                             type="primary",
                             use_container_width=True,
                         )
-                        
+
                     except Exception as e:
                         st.error(f"Failed to merge PDFs: {e}")
 
@@ -138,24 +163,22 @@ with tab2:
     
     **Perfect for:** Large scanned documents, manga PDFs, or any image-heavy PDFs.
     """)
-    
+
     uploaded_file = st.file_uploader(
-        "Choose a PDF file to shrink",
-        type="pdf",
-        help="Upload a PDF file to reduce its size"
+        "Choose a PDF file to shrink", type="pdf", help="Upload a PDF file to reduce its size"
     )
-    
+
     if uploaded_file:
         # Show original file info
         original_bytes = uploaded_file.read()
         original_size = len(original_bytes)
         original_size_mb = original_size / (1024 * 1024)
-        
+
         st.info(f"📄 Original file: **{uploaded_file.name}** ({original_size_mb:.2f} MB)")
-        
+
         # Compression settings
         st.subheader("⚙️ Compression Settings")
-        
+
         col1, col2 = st.columns(2)
         with col1:
             quality = st.slider(
@@ -175,12 +198,12 @@ with tab2:
                 step=100,
                 help="Maximum width/height of images. 1200-1400 is usually readable.",
             )
-        
+
         # Estimate file size
         estimated_reduction = min(90, max(30, (95 - quality) + (2400 - max_dimension) / 20))
         estimated_size = original_size_mb * (1 - estimated_reduction / 100)
         st.caption(f"📊 Estimated output: ~{estimated_size:.1f} MB (this is a rough estimate)")
-        
+
         if st.button("🔧 Shrink PDF", type="primary", use_container_width=True):
             with st.spinner("Shrinking PDF... This may take a while for large files."):
                 try:
@@ -191,14 +214,14 @@ with tab2:
                         quality=quality,
                         max_dimension=max_dimension,
                     )
-                    
+
                     # Calculate stats
                     shrunk_size = len(shrunk_pdf)
                     shrunk_size_mb = shrunk_size / (1024 * 1024)
                     reduction = ((original_size - shrunk_size) / original_size) * 100
-                    
+
                     st.success("✅ PDF shrunk successfully!")
-                    
+
                     # Show stats
                     col1, col2, col3 = st.columns(3)
                     with col1:
@@ -206,12 +229,16 @@ with tab2:
                     with col2:
                         st.metric("New Size", f"{shrunk_size_mb:.2f} MB")
                     with col3:
-                        st.metric("Reduction", f"{reduction:.1f}%", delta=f"-{original_size_mb - shrunk_size_mb:.1f} MB")
-                    
+                        st.metric(
+                            "Reduction",
+                            f"{reduction:.1f}%",
+                            delta=f"-{original_size_mb - shrunk_size_mb:.1f} MB",
+                        )
+
                     # Default filename
                     base_name = uploaded_file.name.rsplit(".", 1)[0]
                     default_name = f"{base_name}_shrunk.pdf"
-                    
+
                     st.download_button(
                         label="📥 Download Shrunk PDF",
                         data=shrunk_pdf,
@@ -220,7 +247,7 @@ with tab2:
                         type="primary",
                         use_container_width=True,
                     )
-                    
+
                 except Exception as e:
                     st.error(f"Failed to shrink PDF: {e}")
                     st.exception(e)
@@ -232,44 +259,44 @@ with tab3:
     
     **✨ Uses a real browser** to load JavaScript-rendered pages and print to PDF.
     """)
-    
+
     def download_page_as_pdf(url: str, progress_callback=None) -> bytes:
         """Load a webpage and print it as PDF using Playwright."""
         from playwright.sync_api import sync_playwright
         from loguru import logger
-        
+
         logger.info(f"Starting download for: {url}")
-        
+
         if progress_callback:
             progress_callback(0.05, "Starting browser...")
-        
+
         with sync_playwright() as p:
             # Launch headless browser
             logger.debug("Launching Chromium...")
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
                 viewport={"width": 1200, "height": 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             )
             page = context.new_page()
-            
+
             if progress_callback:
                 progress_callback(0.1, "Loading page...")
-            
+
             # Navigate to URL - use domcontentloaded instead of networkidle (faster, more reliable)
             logger.debug(f"Navigating to {url}...")
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
             except Exception as e:
                 logger.warning(f"Initial load timeout, continuing anyway: {e}")
-            
+
             # Wait for page to settle
             logger.debug("Waiting for page to settle...")
             time.sleep(3)
-            
+
             if progress_callback:
                 progress_callback(0.2, "Scrolling to load all images...")
-            
+
             # Scroll to bottom to trigger lazy loading
             logger.debug("Scrolling page...")
             page.evaluate("""
@@ -290,21 +317,21 @@ with tab3:
                     });
                 }
             """)
-            
+
             if progress_callback:
                 progress_callback(0.5, "Waiting for images to load...")
-            
+
             # Wait for images to load after scrolling
             logger.debug("Waiting for images to load...")
             time.sleep(3)
-            
+
             # Scroll back to top
             page.evaluate("window.scrollTo(0, 0)")
             time.sleep(0.5)
-            
+
             if progress_callback:
                 progress_callback(0.6, "Hiding non-essential elements...")
-            
+
             logger.debug("Hiding non-content elements...")
             # Try to hide common non-content elements (headers, footers, ads, navigation)
             page.evaluate("""
@@ -331,10 +358,10 @@ with tab3:
                     });
                 }
             """)
-            
+
             if progress_callback:
                 progress_callback(0.8, "Generating PDF...")
-            
+
             logger.debug("Generating PDF...")
             # Print to PDF
             pdf_bytes = page.pdf(
@@ -342,15 +369,15 @@ with tab3:
                 print_background=True,
                 margin={"top": "10mm", "bottom": "10mm", "left": "5mm", "right": "5mm"},
             )
-            
+
             logger.info(f"Browser PDF generated: {len(pdf_bytes) / 1024 / 1024:.1f} MB")
             browser.close()
-            
+
             if progress_callback:
                 progress_callback(1.0, "Done!")
-            
+
             return pdf_bytes
-    
+
     def extract_chapter_info(url: str) -> tuple[str, str]:
         """Try to extract manga title and chapter number from URL."""
         patterns = [
@@ -360,7 +387,7 @@ with tab3:
             r"/([^/]+)/chapter[/-]?(\d+)",
             r"/chapter[/-]?(\d+)",
         ]
-        
+
         for pattern in patterns:
             match = re.search(pattern, url, re.IGNORECASE)
             if match:
@@ -371,16 +398,16 @@ with tab3:
                     return title, chapter
                 elif len(groups) == 1:
                     return "Manga", groups[0]
-        
+
         return "Manga", "Chapter"
-    
+
     # UI
     url = st.text_input(
         "🔗 Manga Chapter URL",
         placeholder="https://example.com/manga/title/chapter/1",
         help="Paste the URL of a manga chapter page",
     )
-    
+
     # Compression settings
     st.subheader("⚙️ Compression Settings")
     col1, col2 = st.columns(2)
@@ -404,51 +431,55 @@ with tab3:
             help="Maximum width/height. 1200-1400 is readable.",
             key="webmanga_maxdim",
         )
-    
+
     # Always show filename input and button
     if url:
         title, chapter = extract_chapter_info(url)
         default_filename = f"{title} - Chapter {chapter}.pdf"
     else:
         default_filename = "manga_chapter.pdf"
-    
+
     filename = st.text_input("📁 Output filename", value=default_filename)
     if not filename.endswith(".pdf"):
         filename += ".pdf"
-    
+
     # Button always visible, disabled if no URL
-    if st.button("📥 Download & Create PDF", type="primary", use_container_width=True, disabled=not url):
+    if st.button(
+        "📥 Download & Create PDF", type="primary", use_container_width=True, disabled=not url
+    ):
         progress_bar = st.progress(0, text="Starting...")
         status_text = st.empty()  # For detailed status updates
-        
+
         def update_progress(progress, text):
             progress_bar.progress(min(progress, 0.99), text=text)
             status_text.info(f"🔄 {text}")
-        
+
         try:
             # Step 1: Download page as PDF
             raw_pdf_bytes = download_page_as_pdf(url, update_progress)
             raw_size_mb = len(raw_pdf_bytes) / (1024 * 1024)
-            
+
             # Step 2: Compress the PDF using our shrinker
             update_progress(0.85, f"Compressing PDF ({raw_size_mb:.1f} MB)...")
-            
+
             service = PDFService()
             pdf_bytes = service.shrink_pdf(
                 raw_pdf_bytes,
                 quality=quality,
                 max_dimension=max_dimension,
             )
-            
+
             # Clear progress displays
             progress_bar.empty()
             status_text.empty()
-            
+
             pdf_size_mb = len(pdf_bytes) / (1024 * 1024)
             reduction = (1 - pdf_size_mb / raw_size_mb) * 100 if raw_size_mb > 0 else 0
-            
-            st.success(f"✅ PDF created: {pdf_size_mb:.1f} MB (compressed from {raw_size_mb:.1f} MB, -{reduction:.0f}%)")
-            
+
+            st.success(
+                f"✅ PDF created: {pdf_size_mb:.1f} MB (compressed from {raw_size_mb:.1f} MB, -{reduction:.0f}%)"
+            )
+
             st.download_button(
                 label="📥 Download PDF",
                 data=pdf_bytes,
@@ -457,13 +488,13 @@ with tab3:
                 type="primary",
                 use_container_width=True,
             )
-            
+
         except Exception as e:
             progress_bar.empty()
             status_text.empty()
             st.error(f"❌ Error: {e}")
             st.exception(e)
-    
+
     st.divider()
     st.caption("""
     **Note:** This tool uses a headless browser to print the page as PDF.
@@ -471,4 +502,457 @@ with tab3:
     """)
 
 with tab4:
-    st.info("More tools coming soon!")
+    st.header("📚 CBZ Creator")
+    st.markdown("""
+    Create CBZ (Comic Book Zip) archives from images. CBZ is the standard format for digital comics and manga readers.
+    
+    **Perfect for:** Converting image folders into a format readable by manga/comic apps.
+    """)
+
+    uploaded_images = st.file_uploader(
+        "Upload images (JPG, PNG, WEBP)",
+        type=["jpg", "jpeg", "png", "webp"],
+        accept_multiple_files=True,
+        help="Select multiple images to combine into a CBZ archive",
+        key="cbz_uploader",
+    )
+
+    if uploaded_images:
+        st.info(f"📷 {len(uploaded_images)} images uploaded")
+
+        # Image format settings
+        st.subheader("⚙️ Settings")
+        col1, col2 = st.columns(2)
+        with col1:
+            image_format = st.selectbox(
+                "Image Format",
+                options=["JPEG", "WEBP", "PNG"],
+                index=0,
+                help="JPEG: Good compression. WEBP: Best compression. PNG: Lossless.",
+                key="cbz_format",
+            )
+        with col2:
+            quality = st.slider(
+                "Quality",
+                min_value=50,
+                max_value=100,
+                value=85,
+                help="Quality for JPEG/WEBP (ignored for PNG)",
+                key="cbz_quality",
+            )
+
+        # Filename
+        default_name = "manga.cbz"
+        if uploaded_images:
+            # Try to get name from first file
+            first_name = uploaded_images[0].name.rsplit(".", 1)[0]
+            # Remove common suffixes like _001, -001, etc.
+            base_name = re.sub(r"[-_]?\d+$", "", first_name)
+            if base_name:
+                default_name = f"{base_name}.cbz"
+
+        filename = st.text_input("📁 Output filename", value=default_name, key="cbz_filename")
+        if not filename.endswith(".cbz"):
+            filename += ".cbz"
+
+        if st.button("📦 Create CBZ", type="primary", use_container_width=True, key="cbz_create"):
+            with st.spinner("Creating CBZ archive..."):
+                try:
+                    # Load images
+                    images = []
+                    for f in uploaded_images:
+                        img = Image.open(f)
+                        img.load()  # Ensure fully loaded
+                        images.append(img)
+
+                    # Create CBZ
+                    service = ArchiveService(image_format=image_format, quality=quality)
+                    cbz_bytes = service.create_cbz(images)
+
+                    size_mb = len(cbz_bytes) / (1024 * 1024)
+                    st.success(f"✅ CBZ created: {size_mb:.2f} MB")
+
+                    st.download_button(
+                        label="📥 Download CBZ",
+                        data=cbz_bytes,
+                        file_name=filename,
+                        mime="application/x-cbz",
+                        type="primary",
+                        use_container_width=True,
+                    )
+
+                except Exception as e:
+                    st.error(f"Failed to create CBZ: {e}")
+
+with tab5:
+    st.header("📖 EPUB Creator")
+    st.markdown("""
+    Create EPUB ebooks from text. Perfect for light novels and text-based content.
+    
+    **Features:**
+    - Automatic chapter detection (split by `---` or blank lines)
+    - Optional cover image
+    - Clean, readable formatting
+    """)
+
+    # Book metadata
+    st.subheader("📝 Book Information")
+    col1, col2 = st.columns(2)
+    with col1:
+        book_title = st.text_input("Title", placeholder="My Light Novel", key="epub_title")
+    with col2:
+        book_author = st.text_input("Author", placeholder="Author Name", key="epub_author")
+
+    col3, col4 = st.columns(2)
+    with col3:
+        book_language = st.selectbox(
+            "Language",
+            options=["en", "de", "ja", "fr", "es", "zh", "ko"],
+            format_func=lambda x: {
+                "en": "English",
+                "de": "German",
+                "ja": "Japanese",
+                "fr": "French",
+                "es": "Spanish",
+                "zh": "Chinese",
+                "ko": "Korean",
+            }[x],
+            key="epub_language",
+        )
+    with col4:
+        chapter_separator = st.selectbox(
+            "Chapter Separator",
+            options=["---", "***", "===", "blank_lines"],
+            format_func=lambda x: {
+                "---": "Three dashes (---)",
+                "***": "Three asterisks (***)",
+                "===": "Three equals (===)",
+                "blank_lines": "Double blank lines",
+            }[x],
+            help="How chapters are separated in your text",
+            key="epub_separator",
+        )
+
+    # Cover image (optional)
+    cover_file = st.file_uploader(
+        "Cover Image (optional)",
+        type=["jpg", "jpeg", "png", "webp"],
+        help="Optional cover image for the ebook",
+        key="epub_cover",
+    )
+
+    # Text content
+    st.subheader("📄 Content")
+    content_method = st.radio(
+        "Input method",
+        options=["text", "file"],
+        format_func=lambda x: "Paste text" if x == "text" else "Upload text file",
+        horizontal=True,
+        key="epub_input_method",
+    )
+
+    book_content = ""
+    if content_method == "text":
+        book_content = st.text_area(
+            "Book content",
+            height=300,
+            placeholder="Paste your light novel text here...\n\n---\n\nChapter 2 starts here...",
+            help="Separate chapters with the selected separator",
+            key="epub_content",
+        )
+    else:
+        content_file = st.file_uploader(
+            "Upload text file",
+            type=["txt", "md"],
+            help="Upload a .txt or .md file",
+            key="epub_content_file",
+        )
+        if content_file:
+            book_content = content_file.read().decode("utf-8")
+            st.success(f"Loaded {len(book_content)} characters")
+
+    # Preview
+    if book_content:
+        sep_map = {
+            "---": "\n\n---\n\n",
+            "***": "\n\n***\n\n",
+            "===": "\n\n===\n\n",
+            "blank_lines": "\n\n\n\n",
+        }
+        sep = sep_map[chapter_separator]
+        chapters = book_content.split(sep)
+        chapters = [c.strip() for c in chapters if c.strip()]
+        st.info(f"📚 Detected {len(chapters)} chapter(s)")
+
+    # Filename
+    if book_title:
+        default_epub_name = f"{book_title}.epub"
+    else:
+        default_epub_name = "book.epub"
+
+    epub_filename = st.text_input(
+        "📁 Output filename", value=default_epub_name, key="epub_filename"
+    )
+    if not epub_filename.endswith(".epub"):
+        epub_filename += ".epub"
+
+    # Create button
+    can_create = book_title and book_author and book_content
+    if st.button(
+        "📖 Create EPUB",
+        type="primary",
+        use_container_width=True,
+        disabled=not can_create,
+        key="epub_create",
+    ):
+        with st.spinner("Creating EPUB..."):
+            try:
+                # Load cover if provided
+                cover_image = None
+                if cover_file:
+                    cover_image = Image.open(cover_file)
+
+                # Create EPUB
+                service = EPUBService()
+                sep_map = {
+                    "---": "\n\n---\n\n",
+                    "***": "\n\n***\n\n",
+                    "===": "\n\n===\n\n",
+                    "blank_lines": "\n\n\n\n",
+                }
+                sep = sep_map[chapter_separator]
+
+                epub_bytes = service.create_epub_from_text(
+                    title=book_title,
+                    author=book_author,
+                    text=book_content,
+                    cover_image=cover_image,
+                    language=book_language,
+                    chapter_separator=sep,
+                )
+
+                size_kb = len(epub_bytes) / 1024
+                st.success(f"✅ EPUB created: {size_kb:.1f} KB")
+
+                st.download_button(
+                    label="📥 Download EPUB",
+                    data=epub_bytes,
+                    file_name=epub_filename,
+                    mime="application/epub+zip",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+            except Exception as e:
+                st.error(f"Failed to create EPUB: {e}")
+
+    if not can_create:
+        st.caption("Fill in title, author, and content to create EPUB")
+
+with tab6:
+    st.header("🔄 Format Converter")
+    st.markdown("""
+    Convert between different manga/ebook formats.
+    """)
+
+    conversion_type = st.selectbox(
+        "Conversion Type",
+        options=["pdf_to_cbz", "cbz_to_pdf", "images_to_pdf"],
+        format_func=lambda x: {
+            "pdf_to_cbz": "PDF → CBZ",
+            "cbz_to_pdf": "CBZ → PDF",
+            "images_to_pdf": "Images → PDF",
+        }[x],
+        key="convert_type",
+    )
+
+    if conversion_type == "pdf_to_cbz":
+        st.subheader("PDF → CBZ")
+        st.markdown("Convert a PDF file to CBZ format for better compatibility with manga readers.")
+
+        pdf_file = st.file_uploader("Upload PDF", type=["pdf"], key="convert_pdf_to_cbz")
+
+        if pdf_file:
+            # Settings
+            col1, col2 = st.columns(2)
+            with col1:
+                img_format = st.selectbox(
+                    "Image Format",
+                    options=["JPEG", "WEBP", "PNG"],
+                    index=0,
+                    key="convert_img_format",
+                )
+            with col2:
+                img_quality = st.slider(
+                    "Quality",
+                    min_value=50,
+                    max_value=100,
+                    value=85,
+                    key="convert_quality",
+                )
+
+            base_name = pdf_file.name.rsplit(".", 1)[0]
+            output_name = st.text_input(
+                "Output filename", value=f"{base_name}.cbz", key="convert_output_name"
+            )
+            if not output_name.endswith(".cbz"):
+                output_name += ".cbz"
+
+            if st.button("🔄 Convert to CBZ", type="primary", use_container_width=True):
+                with st.spinner("Converting PDF to CBZ..."):
+                    try:
+                        # Load PDF
+                        pdf_bytes = pdf_file.read()
+                        pdf_service = PDFService()
+                        page_count = pdf_service.load_from_bytes(pdf_bytes)
+
+                        # Extract all pages as images
+                        images = []
+                        progress = st.progress(0)
+                        for i in range(page_count):
+                            progress.progress(
+                                (i + 1) / page_count, f"Extracting page {i + 1}/{page_count}"
+                            )
+                            img = pdf_service.get_page_image(i)
+                            images.append(img)
+
+                        # Create CBZ
+                        progress.progress(1.0, "Creating CBZ...")
+                        archive_service = ArchiveService(
+                            image_format=img_format, quality=img_quality
+                        )
+                        cbz_bytes = archive_service.create_cbz(images)
+
+                        pdf_service.close()
+                        progress.empty()
+
+                        size_mb = len(cbz_bytes) / (1024 * 1024)
+                        st.success(f"✅ Converted: {size_mb:.2f} MB ({page_count} pages)")
+
+                        st.download_button(
+                            label="📥 Download CBZ",
+                            data=cbz_bytes,
+                            file_name=output_name,
+                            mime="application/x-cbz",
+                            type="primary",
+                            use_container_width=True,
+                        )
+
+                    except Exception as e:
+                        st.error(f"Conversion failed: {e}")
+
+    elif conversion_type == "cbz_to_pdf":
+        st.subheader("CBZ → PDF")
+        st.markdown("Convert a CBZ archive to PDF format.")
+
+        cbz_file = st.file_uploader("Upload CBZ", type=["cbz", "zip"], key="convert_cbz_to_pdf")
+
+        if cbz_file:
+            col1, col2 = st.columns(2)
+            with col1:
+                pdf_quality = st.slider("JPEG Quality", 50, 95, 75, key="cbz_pdf_quality")
+            with col2:
+                pdf_max_dim = st.slider(
+                    "Max Image Size", 800, 2400, 1400, step=100, key="cbz_pdf_maxdim"
+                )
+
+            base_name = cbz_file.name.rsplit(".", 1)[0]
+            output_name = st.text_input(
+                "Output filename", value=f"{base_name}.pdf", key="cbz_output_name"
+            )
+            if not output_name.endswith(".pdf"):
+                output_name += ".pdf"
+
+            if st.button("🔄 Convert to PDF", type="primary", use_container_width=True):
+                with st.spinner("Converting CBZ to PDF..."):
+                    try:
+                        # Extract images from CBZ
+                        cbz_bytes = cbz_file.read()
+                        archive_service = ArchiveService()
+                        images = archive_service.extract_cbz(cbz_bytes)
+
+                        # Create PDF
+                        pdf_service = PDFService()
+                        pdf_bytes = pdf_service.create_pdf_from_images(
+                            images,
+                            quality=pdf_quality,
+                            max_dimension=pdf_max_dim,
+                        )
+
+                        size_mb = len(pdf_bytes) / (1024 * 1024)
+                        st.success(f"✅ Converted: {size_mb:.2f} MB ({len(images)} pages)")
+
+                        st.download_button(
+                            label="📥 Download PDF",
+                            data=pdf_bytes,
+                            file_name=output_name,
+                            mime="application/pdf",
+                            type="primary",
+                            use_container_width=True,
+                        )
+
+                    except Exception as e:
+                        st.error(f"Conversion failed: {e}")
+
+    elif conversion_type == "images_to_pdf":
+        st.subheader("Images → PDF")
+        st.markdown("Combine multiple images into a PDF document.")
+
+        image_files = st.file_uploader(
+            "Upload images",
+            type=["jpg", "jpeg", "png", "webp"],
+            accept_multiple_files=True,
+            key="convert_images_to_pdf",
+        )
+
+        if image_files:
+            st.info(f"📷 {len(image_files)} images uploaded")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                pdf_quality = st.slider("JPEG Quality", 50, 95, 75, key="img_pdf_quality")
+            with col2:
+                pdf_max_dim = st.slider(
+                    "Max Image Size", 800, 2400, 1400, step=100, key="img_pdf_maxdim"
+                )
+
+            base_name = image_files[0].name.rsplit(".", 1)[0]
+            base_name = re.sub(r"[-_]?\d+$", "", base_name)
+            output_name = st.text_input(
+                "Output filename", value=f"{base_name or 'images'}.pdf", key="img_output_name"
+            )
+            if not output_name.endswith(".pdf"):
+                output_name += ".pdf"
+
+            if st.button("🔄 Create PDF", type="primary", use_container_width=True):
+                with st.spinner("Creating PDF..."):
+                    try:
+                        # Load images
+                        images = []
+                        for f in image_files:
+                            img = Image.open(f)
+                            img.load()
+                            images.append(img)
+
+                        # Create PDF
+                        pdf_service = PDFService()
+                        pdf_bytes = pdf_service.create_pdf_from_images(
+                            images,
+                            quality=pdf_quality,
+                            max_dimension=pdf_max_dim,
+                        )
+
+                        size_mb = len(pdf_bytes) / (1024 * 1024)
+                        st.success(f"✅ Created: {size_mb:.2f} MB ({len(images)} pages)")
+
+                        st.download_button(
+                            label="📥 Download PDF",
+                            data=pdf_bytes,
+                            file_name=output_name,
+                            mime="application/pdf",
+                            type="primary",
+                            use_container_width=True,
+                        )
+
+                    except Exception as e:
+                        st.error(f"Failed to create PDF: {e}")
