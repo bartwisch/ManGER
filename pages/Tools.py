@@ -402,99 +402,227 @@ with tab3:
 
         return "Manga", "Chapter"
 
-    # UI
-    url = st.text_input(
-        "🔗 Manga Chapter URL",
-        placeholder="https://example.com/manga/title/chapter/1",
-        help="Paste the URL of a manga chapter page",
+    # Mode selection
+    mode = st.radio(
+        "Mode",
+        options=["Single Chapter", "Series"],
+        horizontal=True,
+        help="Download a single chapter or a whole series/range of chapters.",
     )
 
-    # Compression settings
-    st.subheader("⚙️ Compression Settings")
-    col1, col2 = st.columns(2)
-    with col1:
-        quality = st.slider(
-            "JPEG Quality",
-            min_value=40,
-            max_value=90,
-            value=70,
-            step=5,
-            help="Lower = smaller file. 60-70 is usually good for manga.",
-            key="webmanga_quality",
-        )
-    with col2:
-        max_dimension = st.slider(
-            "Max Image Size (px)",
-            min_value=800,
-            max_value=2000,
-            value=1400,
-            step=100,
-            help="Maximum width/height. 1200-1400 is readable.",
-            key="webmanga_maxdim",
+    if mode == "Single Chapter":
+        # UI
+        url = st.text_input(
+            "🔗 Manga Chapter URL",
+            placeholder="https://example.com/manga/title/chapter/1",
+            help="Paste the URL of a manga chapter page",
         )
 
-    # Always show filename input and button
-    if url:
-        title, chapter = extract_chapter_info(url)
-        default_filename = f"{title} - Chapter {chapter}.pdf"
-    else:
-        default_filename = "manga_chapter.pdf"
-
-    filename = st.text_input("📁 Output filename", value=default_filename)
-    if not filename.endswith(".pdf"):
-        filename += ".pdf"
-
-    # Button always visible, disabled if no URL
-    if st.button(
-        "📥 Download & Create PDF", type="primary", use_container_width=True, disabled=not url
-    ):
-        progress_bar = st.progress(0, text="Starting...")
-        status_text = st.empty()  # For detailed status updates
-
-        def update_progress(progress, text):
-            progress_bar.progress(min(progress, 0.99), text=text)
-            status_text.info(f"🔄 {text}")
-
-        try:
-            # Step 1: Download page as PDF
-            raw_pdf_bytes = download_page_as_pdf(url, update_progress)
-            raw_size_mb = len(raw_pdf_bytes) / (1024 * 1024)
-
-            # Step 2: Compress the PDF using our shrinker
-            update_progress(0.85, f"Compressing PDF ({raw_size_mb:.1f} MB)...")
-
-            service = PDFService()
-            pdf_bytes = service.shrink_pdf(
-                raw_pdf_bytes,
-                quality=quality,
-                max_dimension=max_dimension,
+        # Compression settings
+        st.subheader("⚙️ Compression Settings")
+        col1, col2 = st.columns(2)
+        with col1:
+            quality = st.slider(
+                "JPEG Quality",
+                min_value=40,
+                max_value=90,
+                value=70,
+                step=5,
+                help="Lower = smaller file. 60-70 is usually good for manga.",
+                key="webmanga_quality_single",
+            )
+        with col2:
+            max_dimension = st.slider(
+                "Max Image Size (px)",
+                min_value=800,
+                max_value=2000,
+                value=1400,
+                step=100,
+                help="Maximum width/height. 1200-1400 is readable.",
+                key="webmanga_maxdim_single",
             )
 
-            # Clear progress displays
-            progress_bar.empty()
-            status_text.empty()
+        # Always show filename input and button
+        if url:
+            title, chapter = extract_chapter_info(url)
+            default_filename = f"{title} - Chapter {chapter}.pdf"
+        else:
+            default_filename = "manga_chapter.pdf"
 
-            pdf_size_mb = len(pdf_bytes) / (1024 * 1024)
-            reduction = (1 - pdf_size_mb / raw_size_mb) * 100 if raw_size_mb > 0 else 0
+        filename = st.text_input("📁 Output filename", value=default_filename)
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
 
-            st.success(
-                f"✅ PDF created: {pdf_size_mb:.1f} MB (compressed from {raw_size_mb:.1f} MB, -{reduction:.0f}%)"
+        # Button always visible, disabled if no URL
+        if st.button(
+            "📥 Download & Create PDF", type="primary", use_container_width=True, disabled=not url
+        ):
+            progress_bar = st.progress(0, text="Starting...")
+            status_text = st.empty()  # For detailed status updates
+
+            def update_progress(progress, text):
+                progress_bar.progress(min(progress, 0.99), text=text)
+                status_text.info(f"🔄 {text}")
+
+            try:
+                # Step 1: Download page as PDF
+                raw_pdf_bytes = download_page_as_pdf(url, update_progress)
+                raw_size_mb = len(raw_pdf_bytes) / (1024 * 1024)
+
+                # Step 2: Compress the PDF using our shrinker
+                update_progress(0.85, f"Compressing PDF ({raw_size_mb:.1f} MB)...")
+
+                service = PDFService()
+                pdf_bytes = service.shrink_pdf(
+                    raw_pdf_bytes,
+                    quality=quality,
+                    max_dimension=max_dimension,
+                )
+
+                # Clear progress displays
+                progress_bar.empty()
+                status_text.empty()
+
+                pdf_size_mb = len(pdf_bytes) / (1024 * 1024)
+                reduction = (1 - pdf_size_mb / raw_size_mb) * 100 if raw_size_mb > 0 else 0
+
+                st.success(
+                    f"✅ PDF created: {pdf_size_mb:.1f} MB (compressed from {raw_size_mb:.1f} MB, -{reduction:.0f}%)"
+                )
+
+                st.download_button(
+                    label="📥 Download PDF",
+                    data=pdf_bytes,
+                    file_name=filename,
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+            except Exception as e:
+                progress_bar.empty()
+                status_text.empty()
+                st.error(f"❌ Error: {e}")
+                st.exception(e)
+
+    else:  # Series Mode
+        st.info(
+            "ℹ️ **Series Mode:** Enter a URL pattern with `{chapter}` placeholder to download a range of chapters."
+        )
+
+        url_pattern = st.text_input(
+            "🔗 URL Pattern",
+            placeholder="https://w16.sololevelinganime.com/manga/solo-leveling-chapter-{chapter}/",
+            help="Use {chapter} where the chapter number should go.",
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            start_chapter = st.number_input("Start Chapter", min_value=1, value=1, step=1)
+        with col2:
+            end_chapter = st.number_input("End Chapter", min_value=1, value=10, step=1)
+
+        series_title = st.text_input("Series Title", placeholder="Solo Leveling")
+
+        # Compression settings
+        st.subheader("⚙️ Compression Settings")
+        col1, col2 = st.columns(2)
+        with col1:
+            quality = st.slider(
+                "JPEG Quality",
+                min_value=40,
+                max_value=90,
+                value=70,
+                step=5,
+                help="Lower = smaller file. 60-70 is usually good for manga.",
+                key="webmanga_quality_series",
+            )
+        with col2:
+            max_dimension = st.slider(
+                "Max Image Size (px)",
+                min_value=800,
+                max_value=2000,
+                value=1400,
+                step=100,
+                help="Maximum width/height. 1200-1400 is readable.",
+                key="webmanga_maxdim_series",
             )
 
-            st.download_button(
-                label="📥 Download PDF",
-                data=pdf_bytes,
-                file_name=filename,
-                mime="application/pdf",
-                type="primary",
-                use_container_width=True,
-            )
+        default_filename = f"{series_title} - Chapters {start_chapter}-{end_chapter}.pdf" if series_title else "series.pdf"
+        filename = st.text_input("📁 Output filename", value=default_filename, key="series_filename")
+        if not filename.endswith(".pdf"):
+            filename += ".pdf"
 
-        except Exception as e:
-            progress_bar.empty()
-            status_text.empty()
-            st.error(f"❌ Error: {e}")
-            st.exception(e)
+        if st.button(
+            "📥 Download Series & Create PDF",
+            type="primary",
+            use_container_width=True,
+            disabled=not url_pattern or not series_title,
+        ):
+            progress_bar = st.progress(0, text="Starting...")
+            status_text = st.empty()
+            
+            # Container for chapter status
+            chapter_status = st.container()
+
+            def update_progress(progress, text):
+                # Scale progress to current chapter's slot
+                # This is tricky with multiple chapters, so we'll just show the text
+                status_text.info(f"🔄 {text}")
+
+            try:
+                chapters_pdf_bytes = []
+                total_chapters = end_chapter - start_chapter + 1
+                
+                service = PDFService()
+
+                for i, chapter_num in enumerate(range(start_chapter, end_chapter + 1)):
+                    current_url = url_pattern.replace("{chapter}", str(chapter_num))
+                    
+                    # Update overall progress
+                    overall_progress = i / total_chapters
+                    progress_bar.progress(overall_progress, text=f"Processing Chapter {chapter_num} ({i+1}/{total_chapters})")
+                    
+                    with chapter_status:
+                        st.write(f"Downloading Chapter {chapter_num}: {current_url}")
+
+                    # Download chapter
+                    # We pass a dummy callback or None because we handle progress differently here
+                    # Or we could create a wrapper callback
+                    raw_bytes = download_page_as_pdf(current_url, None)
+                    
+                    # Shrink immediately to save memory
+                    shrunk_bytes = service.shrink_pdf(
+                        raw_bytes,
+                        quality=quality,
+                        max_dimension=max_dimension,
+                    )
+                    chapters_pdf_bytes.append(shrunk_bytes)
+
+                progress_bar.progress(0.9, text="Merging chapters...")
+                status_text.info("🔄 Merging all chapters into one PDF...")
+
+                # Merge all chapters
+                merged_pdf = service.merge_pdfs(chapters_pdf_bytes)
+
+                progress_bar.progress(1.0, text="Done!")
+                status_text.success("✅ Series processing complete!")
+
+                merged_size_mb = len(merged_pdf) / (1024 * 1024)
+                st.info(f"📊 Final PDF size: {merged_size_mb:.1f} MB")
+
+                st.download_button(
+                    label="📥 Download Series PDF",
+                    data=merged_pdf,
+                    file_name=filename,
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+            except Exception as e:
+                st.error(f"❌ Error during series processing: {e}")
+                st.exception(e)
 
     st.divider()
     st.caption("""
