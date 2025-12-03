@@ -261,12 +261,19 @@ with tab3:
     **✨ Uses a real browser** to load JavaScript-rendered pages and print to PDF.
     """)
 
-    def download_page_as_pdf(url: str, progress_callback=None) -> bytes:
-        """Load a webpage and print it as PDF using Playwright."""
+    def download_page_as_pdf(url: str, progress_callback=None, method: str = "extract") -> bytes:
+        """Load a webpage and convert it to PDF.
+        
+        Args:
+            url: URL to download
+            progress_callback: Optional callback(progress, text)
+            method: "extract" (download images) or "print" (browser print to PDF)
+        """
         from playwright.sync_api import sync_playwright
         from loguru import logger
+        import requests
 
-        logger.info(f"Starting download for: {url}")
+        logger.info(f"Starting download for: {url} (method={method})")
 
         if progress_callback:
             progress_callback(0.05, "Starting browser...")
@@ -284,7 +291,7 @@ with tab3:
             if progress_callback:
                 progress_callback(0.1, "Loading page...")
 
-            # Navigate to URL - use domcontentloaded instead of networkidle (faster, more reliable)
+            # Navigate to URL
             logger.debug(f"Navigating to {url}...")
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -313,7 +320,6 @@ with tab3:
                                 resolve();
                             }
                         }, 100);
-                        // Timeout after 15 seconds
                         setTimeout(() => { clearInterval(timer); resolve(); }, 15000);
                     });
                 }
@@ -323,55 +329,114 @@ with tab3:
                 progress_callback(0.5, "Waiting for images to load...")
 
             # Wait for images to load after scrolling
-            logger.debug("Waiting for images to load...")
             time.sleep(3)
 
-            # Scroll back to top
-            page.evaluate("window.scrollTo(0, 0)")
-            time.sleep(0.5)
+            if method == "print":
+                # Original "Print to PDF" method
+                # Scroll back to top
+                page.evaluate("window.scrollTo(0, 0)")
+                time.sleep(0.5)
 
-            if progress_callback:
-                progress_callback(0.6, "Hiding non-essential elements...")
+                if progress_callback:
+                    progress_callback(0.6, "Hiding non-essential elements...")
 
-            logger.debug("Hiding non-content elements...")
-            # Try to hide common non-content elements (headers, footers, ads, navigation)
-            page.evaluate("""
-                () => {
-                    const selectorsToHide = [
-                        'header', 'footer', 'nav', '.navbar', '.nav',
-                        '.header', '.footer', '.sidebar', '.ad', '.ads',
-                        '.advertisement', '[class*="banner"]', '[class*="popup"]',
-                        '[class*="modal"]', '[class*="cookie"]', '[class*="consent"]',
-                        '.social-share', '.comments', '#comments', '.related',
-                        '[class*="recommend"]', '.navigation', '.breadcrumb'
-                    ];
-                    selectorsToHide.forEach(selector => {
-                        document.querySelectorAll(selector).forEach(el => {
-                            el.style.display = 'none';
+                logger.debug("Hiding non-content elements...")
+                page.evaluate("""
+                    () => {
+                        const selectorsToHide = [
+                            'header', 'footer', 'nav', '.navbar', '.nav',
+                            '.header', '.footer', '.sidebar', '.ad', '.ads',
+                            '.advertisement', '[class*="banner"]', '[class*="popup"]',
+                            '[class*="modal"]', '[class*="cookie"]', '[class*="consent"]',
+                            '.social-share', '.comments', '#comments', '.related',
+                            '[class*="recommend"]', '.navigation', '.breadcrumb'
+                        ];
+                        selectorsToHide.forEach(selector => {
+                            document.querySelectorAll(selector).forEach(el => {
+                                el.style.display = 'none';
+                            });
                         });
-                    });
-                    // Also remove fixed/sticky positioning that might cause issues
-                    document.querySelectorAll('*').forEach(el => {
-                        const style = window.getComputedStyle(el);
-                        if (style.position === 'fixed' || style.position === 'sticky') {
-                            el.style.position = 'relative';
-                        }
-                    });
-                }
-            """)
+                        document.querySelectorAll('*').forEach(el => {
+                            const style = window.getComputedStyle(el);
+                            if (style.position === 'fixed' || style.position === 'sticky') {
+                                el.style.position = 'relative';
+                            }
+                        });
+                    }
+                """)
 
-            if progress_callback:
-                progress_callback(0.8, "Generating PDF...")
+                if progress_callback:
+                    progress_callback(0.8, "Generating PDF...")
 
-            logger.debug("Generating PDF...")
-            # Print to PDF
-            pdf_bytes = page.pdf(
-                format="A4",
-                print_background=True,
-                margin={"top": "10mm", "bottom": "10mm", "left": "5mm", "right": "5mm"},
-            )
+                logger.debug("Generating PDF...")
+                pdf_bytes = page.pdf(
+                    format="A4",
+                    print_background=True,
+                    margin={"top": "10mm", "bottom": "10mm", "left": "5mm", "right": "5mm"},
+                )
+                
+            else:
+                # "Extract Images" method
+                if progress_callback:
+                    progress_callback(0.6, "Finding images...")
+                
+                # Extract image URLs
+                # Heuristic: Filter for images that are likely manga pages (large enough)
+                image_urls = page.evaluate("""
+                    () => {
+                        const images = Array.from(document.querySelectorAll('img'));
+                        return images
+                            .filter(img => {
+                                // Filter out small icons/ads based on natural size or displayed size
+                                const width = img.naturalWidth || img.width;
+                                const height = img.naturalHeight || img.height;
+                                return width > 200 && height > 300;
+                            })
+                            .map(img => img.src)
+                            .filter(src => src && !src.startsWith('data:')); // Ignore base64 for now if complex
+                    }
+                """)
+                
+                # Deduplicate
+                image_urls = list(dict.fromkeys(image_urls))
+                logger.info(f"Found {len(image_urls)} potential manga images")
+                
+                if not image_urls:
+                    raise Exception("No suitable images found on the page.")
+                
+                if progress_callback:
+                    progress_callback(0.7, f"Downloading {len(image_urls)} images...")
+                
+                downloaded_images = []
+                for i, img_url in enumerate(image_urls):
+                    try:
+                        # Download image
+                        response = requests.get(img_url, timeout=10)
+                        if response.status_code == 200:
+                            img = Image.open(io.BytesIO(response.content))
+                            img.load() # Verify it's a valid image
+                            downloaded_images.append(img)
+                        
+                        if progress_callback:
+                            # Update progress within the 0.7-0.9 range
+                            p = 0.7 + (0.2 * (i + 1) / len(image_urls))
+                            progress_callback(p, f"Downloading image {i+1}/{len(image_urls)}...")
+                            
+                    except Exception as e:
+                        logger.warning(f"Failed to download image {img_url}: {e}")
+                
+                if not downloaded_images:
+                    raise Exception("Failed to download any images.")
+                
+                if progress_callback:
+                    progress_callback(0.9, "Creating PDF from images...")
+                
+                # Create PDF using PDFService
+                # We use a temporary service instance here
+                service = PDFService()
+                pdf_bytes = service.create_pdf_from_images(downloaded_images)
 
-            logger.info(f"Browser PDF generated: {len(pdf_bytes) / 1024 / 1024:.1f} MB")
+            logger.info(f"PDF generated: {len(pdf_bytes) / 1024 / 1024:.1f} MB")
             browser.close()
 
             if progress_callback:
@@ -418,10 +483,19 @@ with tab3:
             help="Paste the URL of a manga chapter page",
         )
 
-        # Compression settings
-        st.subheader("⚙️ Compression Settings")
+        # Settings
+        st.subheader("⚙️ Settings")
         col1, col2 = st.columns(2)
         with col1:
+            method_display = st.radio(
+                "Download Method",
+                options=["Extract Images", "Print Page"],
+                help="Extract Images: Finds and downloads images (Best for most sites).\nPrint Page: Prints the whole page as PDF (Good for simple sites).",
+                key="method_single"
+            )
+            method = "extract" if method_display == "Extract Images" else "print"
+            
+        with col2:
             quality = st.slider(
                 "JPEG Quality",
                 min_value=40,
@@ -431,16 +505,16 @@ with tab3:
                 help="Lower = smaller file. 60-70 is usually good for manga.",
                 key="webmanga_quality_single",
             )
-        with col2:
-            max_dimension = st.slider(
-                "Max Image Size (px)",
-                min_value=800,
-                max_value=2000,
-                value=1400,
-                step=100,
-                help="Maximum width/height. 1200-1400 is readable.",
-                key="webmanga_maxdim_single",
-            )
+            
+        max_dimension = st.slider(
+            "Max Image Size (px)",
+            min_value=800,
+            max_value=2000,
+            value=1400,
+            step=100,
+            help="Maximum width/height. 1200-1400 is readable.",
+            key="webmanga_maxdim_single",
+        )
 
         # Always show filename input and button
         if url:
@@ -466,11 +540,27 @@ with tab3:
 
             try:
                 # Step 1: Download page as PDF
-                raw_pdf_bytes = download_page_as_pdf(url, update_progress)
+                raw_pdf_bytes = download_page_as_pdf(url, update_progress, method=method)
                 raw_size_mb = len(raw_pdf_bytes) / (1024 * 1024)
 
                 # Step 2: Compress the PDF using our shrinker
-                update_progress(0.85, f"Compressing PDF ({raw_size_mb:.1f} MB)...")
+                # If we extracted images, they are already compressed by create_pdf_from_images if we used that service method?
+                # Actually create_pdf_from_images in PDFService takes PIL images and makes a PDF.
+                # It does compress them.
+                # But here we are calling shrink_pdf again on the result?
+                # If method is 'extract', raw_pdf_bytes is already a clean PDF.
+                # shrink_pdf might be redundant or even degrade quality if we re-compress.
+                # However, for consistency and ensuring max_dimension/quality, we can leave it, 
+                # or skip it if method is extract and we trust create_pdf_from_images (which we should configure).
+                # Wait, create_pdf_from_images in PDFService uses config values if not passed.
+                # In download_page_as_pdf, I called service.create_pdf_from_images(downloaded_images).
+                # It uses default config.
+                # So re-shrinking here allows the user to apply the specific slider settings from THIS page.
+                # So I will keep the shrink step for now, although it's double compression.
+                # Ideally I should pass quality/max_dim to download_page_as_pdf -> create_pdf_from_images.
+                # But to minimize changes, I'll leave the shrink step.
+                
+                update_progress(0.85, f"Optimizing PDF ({raw_size_mb:.1f} MB)...")
 
                 service = PDFService()
                 pdf_bytes = service.shrink_pdf(
@@ -487,7 +577,7 @@ with tab3:
                 reduction = (1 - pdf_size_mb / raw_size_mb) * 100 if raw_size_mb > 0 else 0
 
                 st.success(
-                    f"✅ PDF created: {pdf_size_mb:.1f} MB (compressed from {raw_size_mb:.1f} MB, -{reduction:.0f}%)"
+                    f"✅ PDF created: {pdf_size_mb:.1f} MB (optimized from {raw_size_mb:.1f} MB)"
                 )
 
                 st.download_button(
@@ -548,10 +638,19 @@ with tab3:
         elif url_pattern:
             st.warning("⚠️ URL pattern must contain `{chapter}` placeholder.")
 
-        # Compression settings
-        st.subheader("⚙️ Compression Settings")
+        # Settings
+        st.subheader("⚙️ Settings")
         col1, col2 = st.columns(2)
         with col1:
+            method_display = st.radio(
+                "Download Method",
+                options=["Extract Images", "Print Page"],
+                help="Extract Images: Finds and downloads images (Best for most sites).\nPrint Page: Prints the whole page as PDF (Good for simple sites).",
+                key="method_series"
+            )
+            method = "extract" if method_display == "Extract Images" else "print"
+
+        with col2:
             quality = st.slider(
                 "JPEG Quality",
                 min_value=40,
@@ -561,16 +660,16 @@ with tab3:
                 help="Lower = smaller file. 60-70 is usually good for manga.",
                 key="webmanga_quality_series",
             )
-        with col2:
-            max_dimension = st.slider(
-                "Max Image Size (px)",
-                min_value=800,
-                max_value=2000,
-                value=1400,
-                step=100,
-                help="Maximum width/height. 1200-1400 is readable.",
-                key="webmanga_maxdim_series",
-            )
+            
+        max_dimension = st.slider(
+            "Max Image Size (px)",
+            min_value=800,
+            max_value=2000,
+            value=1400,
+            step=100,
+            help="Maximum width/height. 1200-1400 is readable.",
+            key="webmanga_maxdim_series",
+        )
 
         default_filename = f"{series_title} - Chapters {start_chapter}-{end_chapter}.pdf" if series_title else "series.pdf"
         filename = st.text_input("📁 Output filename", value=default_filename, key="series_filename")
@@ -613,7 +712,7 @@ with tab3:
                     # Download chapter
                     # We pass a dummy callback or None because we handle progress differently here
                     # Or we could create a wrapper callback
-                    raw_bytes = download_page_as_pdf(current_url, None)
+                    raw_bytes = download_page_as_pdf(current_url, None, method=method)
                     
                     # Shrink immediately to save memory
                     shrunk_bytes = service.shrink_pdf(
@@ -622,6 +721,16 @@ with tab3:
                         max_dimension=max_dimension,
                     )
                     chapters_pdf_bytes.append(shrunk_bytes)
+                    
+                    # Offer individual download
+                    with chapter_status:
+                        st.download_button(
+                            label=f"📥 Download Chapter {chapter_num}",
+                            data=shrunk_bytes,
+                            file_name=f"{series_title} - Chapter {chapter_num}.pdf",
+                            mime="application/pdf",
+                            key=f"dl_btn_{chapter_num}"
+                        )
 
                 progress_bar.progress(0.9, text="Merging chapters...")
                 status_text.info("🔄 Merging all chapters into one PDF...")
