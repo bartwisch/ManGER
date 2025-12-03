@@ -753,6 +753,20 @@ def get_pipeline(settings: dict | None = None) -> MangaPipeline:
     return st.session_state.pipeline
 
 
+def get_git_commit_hash() -> str:
+    """Get the short git commit hash."""
+    try:
+        import subprocess
+
+        return (
+            subprocess.check_output(["git", "rev-parse", "--short", "HEAD"])
+            .decode("ascii")
+            .strip()
+        )
+    except Exception:
+        return "unknown"
+
+
 def render_sidebar():
     """Render the sidebar with settings."""
     st.sidebar.title("⚙️ Settings")
@@ -798,10 +812,11 @@ def render_sidebar():
 
     # Save API key if changed
     if api_key != st.session_state._saved_api_key:
+        save_api_key_to_env(api_key)
         st.session_state._saved_api_key = api_key
-        if api_key:
-            save_api_key_to_env(api_key)
-            st.sidebar.success("✓ API key saved", icon="🔐")
+        # Force reload to update pipeline
+        st.session_state.pipeline = None
+        st.rerun()
 
     provider = st.sidebar.selectbox(
         "Translation Provider",
