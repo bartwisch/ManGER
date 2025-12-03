@@ -917,6 +917,11 @@ def render_sidebar():
         "Use 'dummy' provider for testing without an API key."
     )
 
+    # Version info
+    st.sidebar.markdown("---")
+    version = get_git_commit_hash()
+    st.sidebar.caption(f"Version: `{version}`")
+
     return {
         "confidence": confidence,
         "provider": provider,
